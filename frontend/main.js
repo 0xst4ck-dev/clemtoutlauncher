@@ -2,8 +2,7 @@
 // You are allowed to use, modify, and redistribute this software for non-commercial purposes only.
 // Sources:
 // - Unpacker/Steamless: https://github.com/atom0s/Steamless
-// - Steam File Generation (depot_keys.json and tokens.json): https://gitlab.com/steamautocracks/manifesthub
-
+// - Steamtool : https://github.com/OpenSteam001/OpenSteamTool
 const API_BASE = '';
 
 window.showCustomModal = function (title, message, isConfirm = false) {
@@ -20,18 +19,52 @@ window.showCustomModal = function (title, message, isConfirm = false) {
         const okBtn = document.getElementById('modal-alert-ok');
         const cancelBtn = document.getElementById('modal-alert-cancel');
 
-        titleEl.innerHTML = title.replace('⚠️', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:bottom; margin-right:8px; color:#f39c12;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>')
-            .replace('🎉', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:bottom; margin-right:8px; color:#2ecc71;"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>')
-            .replace('🔍', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:bottom; margin-right:8px; color:var(--text-primary);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>');
+        const iconWrap = document.getElementById('modal-alert-icon');
+
+        let cleanTitle = title;
+        let iconType = 'info';
+
+        if (title.includes('⚠️') || title.includes('\u26A0')) {
+            iconType = 'warning';
+            cleanTitle = title.replace(/[\u26A0\uFE0F⚠️]+/g, '').trim();
+        } else if (title.includes('🎉')) {
+            iconType = 'success';
+            cleanTitle = title.replace(/🎉/g, '').trim();
+        } else if (title.includes('🔍')) {
+            iconType = 'search';
+            cleanTitle = title.replace(/🔍/g, '').trim();
+        }
+
+        titleEl.textContent = cleanTitle;
+
+        if (iconWrap) {
+            if (iconType === 'warning') {
+                iconWrap.style.background = 'rgba(243, 156, 18, 0.12)';
+                iconWrap.style.color = '#f39c12';
+                iconWrap.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
+            } else if (iconType === 'success') {
+                iconWrap.style.background = 'rgba(46, 204, 113, 0.12)';
+                iconWrap.style.color = '#2ecc71';
+                iconWrap.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>';
+            } else if (iconType === 'search') {
+                iconWrap.style.background = 'rgba(255, 255, 255, 0.05)';
+                iconWrap.style.color = 'var(--text-primary)';
+                iconWrap.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
+            } else {
+                iconWrap.style.background = 'rgba(31, 109, 243, 0.12)';
+                iconWrap.style.color = 'var(--accent)';
+                iconWrap.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+            }
+        }
         if (msgEl) msgEl.innerHTML = message;
 
         if (isConfirm) {
             if (cancelBtn) cancelBtn.style.display = 'block';
-            if (okBtn) okBtn.textContent = 'Confirmer';
-            if (cancelBtn) cancelBtn.textContent = 'Annuler';
+            if (okBtn) okBtn.textContent = translate('modal.confirm');
+            if (cancelBtn) cancelBtn.textContent = translate('modal.cancel');
         } else {
             if (cancelBtn) cancelBtn.style.display = 'none';
-            if (okBtn) okBtn.textContent = 'OK';
+            if (okBtn) okBtn.textContent = translate('modal.ok');
         }
 
         modal.style.display = 'flex';
@@ -57,6 +90,7 @@ window.showCustomModal = function (title, message, isConfirm = false) {
 };
 
 let games = [];
+let lastRenderedGames = [];
 let selectedGames = new Set();
 let currentGame = null;
 let editingGame = null;
@@ -70,12 +104,14 @@ const i18n = {
         'nav.generate': 'Générer Steam',
         'title.details': 'Détails du jeu',
         'nav.settings': 'Paramètres',
+        'drop.zone': 'Glissez-déposez un fichier .lua ici ou cliquez',
+        'generate.drop_zone_hint': 'Cette fonction est utile uniquement si l\'API ne possède pas votre jeu',
         'title.home': 'Bienvenue',
         'title.library': 'Bibliothèque',
         'title.generate': 'Générer un jeu Steam',
         'title.settings': 'Paramètres',
         'home.title': 'Bienvenue sur Clemtout Launcher',
-        'home.stats': '📊 Statistiques',
+        'home.stats': 'Statistiques',
         'home.games': 'Jeux',
         'home.playtime': 'Temps de jeu',
         'library.search': 'Rechercher un jeu...',
@@ -91,9 +127,9 @@ const i18n = {
         'generate.button': 'Générer',
         'generate.result': 'Résultat',
         'settings.title': 'Paramètres',
-        'settings.language': '🌍 Langue',
-        'settings.steam_account': '🎮 Compte Steam',
-        'settings.paths': '📁 Chemins',
+        'settings.language': 'Langue',
+        'settings.steam_account': 'Compte Steam',
+        'settings.paths': 'Chemins',
         'details.back': 'Retour',
         'details.launch_steam_fixed': 'Lancer avec Steam',
         'details.launch_steam_direct': 'Lancer sans Steam',
@@ -114,11 +150,11 @@ const i18n = {
         'photon.title': 'Configuration Photon Patch',
         'photon.subtitle': 'Accès aux Serveurs Multijoueurs',
         'photon.instructions1': 'Certains jeux requièrent une redirection DNS pour fonctionner avec les serveurs de la communauté.',
-        'photon.status_configured': '✅ Configuré',
-        'photon.status_not_configured': '❌ Configuration requise',
+        'photon.status_configured': 'Configured',
+        'photon.status_not_configured': 'Configuration Required',
         'photon.status_unknown': 'Vérification...',
-        'photon.btn_copy': 'Copier la configuration',
-        'photon.btn_edit_admin': 'Modifier avec le Bloc-notes (Admin)',
+        'photon.btn_copy': 'Copier les valeurs',
+        'photon.btn_edit_admin': 'Modifier hosts',
         'details.launch_steam_spacewar': 'Jouer (Steam ID 480)',
         'details.launch_direct': 'Jouer (Sans Steam)',
         'modal.add': 'Ajouter Jeu',
@@ -129,11 +165,65 @@ const i18n = {
         'photon.hint_patched': 'Patched: Serveurs Communautaires',
         'photon.hint_original': 'Originel: Serveurs Officiels',
         'photon.footer_text': 'Note: Redirection des services Exit Games (Photon) vers des relais communautaires.',
-        'photon.btn_edit_admin': 'Modifier Hosts',
-        'photon.btn_copy': 'Copier Valeurs',
-        'photon.btn_delete_official': 'Rejouer en Officiel',
+        'photon.btn_delete_official': 'Mode officiel',
         'legal.responsibility': "Toute utilisation détournée de cet outil reste sous l'entière responsabilité de l'utilisateur final. Clemtout Launcher n'est pas affilié à Valve Corporation, Steam, ou Exit Games.",
-        'photon.btn_delete': 'Supprimer la configuration (Rejouer en officiel)'
+        'photon.btn_delete': 'Supprimer la configuration (Rejouer en officiel)',
+        'photon.alert_title': 'Moteur Photon',
+        'photon.alert_desc': 'Patch DNS requis pour le multijoueur.',
+        'photon.alert_btn': 'Configurer',
+        'connection.warning': 'Détection Photon indisponible (Pas de connexion)',
+        'settings.steam_path': 'Chemin Steam',
+        'settings.steam_path_hint': 'Dossier d\'installation (contenant steam.exe)',
+        'settings.save': 'Sauvegarder',
+        'settings.default': 'Défaut',
+        'settings.no_steam_account': 'Aucun compte Steam trouvé',
+        'settings.active': 'Actif',
+        'photon.btn_clear_cache': 'Vider le cache',
+        'photon.desc_clear_cache': 'Réinitialiser le cache DNS',
+        'photon.desc_edit_admin': 'Éditer le fichier système',
+        'photon.desc_copy': 'Copier dans le presse-papiers',
+        'photon.desc_delete_official': 'Revenir aux serveurs d\'origine',
+        'photon.current_status': 'Statut actuel du service',
+        'modal.ok': 'OK',
+        'modal.confirm': 'Confirmer',
+        'modal.copied': 'Copié',
+        'modal.copied_desc': 'La configuration DNS a été copiée dans votre presse-papiers.',
+        'modal.delete_title': 'Suppression',
+        'modal.delete_photon_desc': 'Voulez-vous vraiment supprimer la configuration DNS pour Photon ? Une élévation Admin sera demandée.',
+        'modal.delete_game_desc': 'Êtes-vous sûr de vouloir supprimer ce jeu de votre bibliothèque ?',
+        'modal.delete_multiple_title': 'Suppression Multiple',
+        'modal.delete_multiple_desc': 'Êtes-vous sûr de vouloir supprimer <b>{count}</b> jeu(x) ?',
+        'modal.import_steam_title': 'Importation Steam',
+        'modal.import_steam_desc': 'Voulez-vous lancer le scan complet de vos disques pour trouver les jeux Steam installés ?',
+        'modal.warning_title': 'Attention',
+        'modal.appid_required': 'AppID requis (ou lien Steam valide)',
+        'modal.appid_assistant': 'AppID Assistant',
+        'modal.appid_updated': 'AppID mis à jour avec succès !',
+        'modal.join_title': 'Rejoindre',
+        'modal.join_desc': 'Voulez-vous rejoindre le serveur "<b style="color:var(--accent);">{server}</b>" ?',
+        'modal.connecting_title': 'Connexion',
+        'modal.connecting_desc': 'Lancement automatique de <b style="color:var(--accent);">{game}</b> et connexion au serveur en cours...',
+        'modal.game_not_found': 'Le jeu "<b style="color:var(--accent);">{game}</b>" n\'a pas été trouvé dans votre bibliothèque pour le lancement automatique.',
+        'generate.waiting': 'En attente...',
+        'generate.search_placeholder': 'Nom du jeu ou AppID...',
+        'generate.searching': 'Recherche en cours...',
+        'generate.no_result': 'Aucun résultat trouvé',
+        'generate.generating': 'Génération...',
+        'generate.initializing': 'Initialisation en cours...',
+        'generate.success': 'Génération Réussie !',
+        'generate.success_desc': 'Le jeu devrait normalement être disponible dans votre bibliothèque Steam.',
+        'generate.error': 'Erreur',
+        'generate.network_error': 'Erreur Réseau',
+        'generate.network_error_desc': 'Impossible de contacter le serveur.',
+        'library.no_banner': 'Pas de bannière',
+        'modal.success': 'Succès',
+        'modal.error': 'Erreur',
+        'generate.lua_success_prefix': 'Le fichier',
+        'generate.lua_success_suffix': 'est désormais disponible sur Steam.',
+        'generate.lua_error_process': 'Erreur lors du traitement : ',
+        'generate.lua_error_unknown': 'Erreur inconnue',
+        'generate.lua_error_network': 'Impossible de contacter le serveur backend.',
+        'photon.cache_cleared_desc': 'Le cache de détection a été vidé. Les jeux seront rescannés lors de la prochaine visite.',
     },
     en: {
         'nav.home': 'Home',
@@ -141,12 +231,14 @@ const i18n = {
         'nav.generate': 'Generate Steam',
         'title.details': 'Game details',
         'nav.settings': 'Settings',
+        'drop.zone': 'Drag & drop a .lua file here or click',
+        'generate.drop_zone_hint': 'This feature is only useful if the API does not have your game',
         'title.home': 'Welcome',
         'title.library': 'Library',
         'title.generate': 'Generate Steam Game',
         'title.settings': 'Settings',
         'home.title': 'Welcome to Clemtout Launcher',
-        'home.stats': '📊 Statistics',
+        'home.stats': 'Statistics',
         'home.games': 'Games',
         'home.playtime': 'Playtime',
         'library.search': 'Search for a game...',
@@ -162,9 +254,9 @@ const i18n = {
         'generate.button': 'Generate',
         'generate.result': 'Result',
         'settings.title': 'Settings',
-        'settings.language': '🌍 Language',
-        'settings.steam_account': '🎮 Steam Account',
-        'settings.paths': '📁 Paths',
+        'settings.language': 'Language',
+        'settings.steam_account': 'Steam Account',
+        'settings.paths': 'Paths',
         'details.back': 'Back',
         'details.playtime': 'Total playtime',
         'details.launch_steam_generic': 'Launch via Steam',
@@ -186,8 +278,8 @@ const i18n = {
         'photon.title': 'Photon Patch Setup',
         'photon.subtitle': 'Multiplayer Server Access',
         'photon.instructions1': 'Some games require a DNS redirection to work with community servers.',
-        'photon.status_configured': '✅ Configured',
-        'photon.status_not_configured': '❌ Configuration Required',
+        'photon.status_configured': 'Configured',
+        'photon.status_not_configured': 'Configuration Required',
         'photon.status_unknown': 'Checking...',
         'details.launch_steam_spacewar': 'Play (Steam ID 480)',
         'details.launch_direct': 'Play (No Steam)',
@@ -201,9 +293,65 @@ const i18n = {
         'photon.footer_text': 'Note: Redirection of Exit Games (Photon) services to community relays.',
         'photon.btn_edit_admin': 'Edit Hosts',
         'photon.btn_copy': 'Copy Values',
-        'photon.btn_delete_official': 'Play on Official',
+        'photon.btn_delete_official': 'Official Mode',
         'legal.responsibility': 'Any misuse of this tool remains the sole responsibility of the end user. Clemtout Launcher is not affiliated with Valve Corporation, Steam, or Exit Games.',
-        'photon.btn_delete': 'Delete configuration (Play on official)'
+        'photon.btn_delete': 'Delete configuration (Play on official)',
+        'photon.alert_title': 'Photon Engine',
+        'photon.alert_desc': 'DNS Patch required for multiplayer.',
+        'photon.alert_btn': 'Configure',
+        'connection.warning': 'Photon detection unavailable (No connection)',
+        'settings.steam_path': 'Steam Path',
+        'settings.steam_path_hint': 'Installation folder (containing steam.exe)',
+        'settings.save': 'Save',
+        'settings.default': 'Default',
+        'settings.no_steam_account': 'No Steam account found',
+        'settings.active': 'Active',
+        'photon.btn_clear_cache': 'Clear Cache',
+        'photon.desc_clear_cache': 'Reset DNS cache',
+        'photon.desc_edit_admin': 'Edit the system file',
+        'photon.desc_copy': 'Copy to clipboard',
+        'photon.desc_delete_official': 'Revert to original servers',
+        'photon.current_status': 'Current Service Status',
+        'modal.ok': 'OK',
+        'modal.confirm': 'Confirm',
+        'modal.copied': 'Copied',
+        'modal.copied_desc': 'The DNS configuration has been copied to your clipboard.',
+        'modal.delete_title': 'Delete',
+        'modal.delete_photon_desc': 'Are you sure you want to delete the Photon DNS configuration? Admin elevation will be requested.',
+        'modal.delete_game_desc': 'Are you sure you want to remove this game from your library?',
+        'modal.delete_multiple_title': 'Bulk Delete',
+        'modal.delete_multiple_desc': 'Are you sure you want to delete <b>{count}</b> game(s)?',
+        'modal.import_steam_title': 'Steam Import',
+        'modal.import_steam_desc': 'Do you want to run a full scan of your drives to find installed Steam games?',
+        'modal.warning_title': 'Warning',
+        'modal.appid_required': 'AppID required (or valid Steam link)',
+        'modal.appid_assistant': 'AppID Assistant',
+        'modal.appid_updated': 'AppID successfully updated!',
+        'modal.join_title': 'Join',
+        'modal.join_desc': 'Do you want to join the server "<b style="color:var(--accent);">{server}</b>"?',
+        'modal.connecting_title': 'Connecting',
+        'modal.connecting_desc': 'Automatically launching <b style="color:var(--accent);">{game}</b> and connecting to the server...',
+        'modal.game_not_found': 'The game "<b style="color:var(--accent);">{game}</b>" was not found in your library for automatic launch.',
+        'generate.waiting': 'Waiting...',
+        'generate.search_placeholder': 'Game name or AppID...',
+        'generate.searching': 'Searching...',
+        'generate.no_result': 'No result found',
+        'generate.generating': 'Generating...',
+        'generate.initializing': 'Initializing...',
+        'generate.success': 'Generation Successful!',
+        'generate.success_desc': 'The game should now be available in your Steam library.',
+        'generate.error': 'Error',
+        'generate.network_error': 'Network Error',
+        'generate.network_error_desc': 'Cannot contact the server.',
+        'library.no_banner': 'No banner',
+        'modal.success': 'Success',
+        'modal.error': 'Error',
+        'generate.lua_success_prefix': 'The file',
+        'generate.lua_success_suffix': 'is now available on Steam.',
+        'generate.lua_error_process': 'Error during processing: ',
+        'generate.lua_error_unknown': 'Unknown error',
+        'generate.lua_error_network': 'Unable to reach the backend server.',
+        'photon.cache_cleared_desc': 'The detection cache has been cleared. Games will be rescanned on your next visit.',
     }
 };
 
@@ -213,12 +361,54 @@ function translate(key) {
 
 function updateTranslations() {
     document.querySelectorAll('[data-i18n]').forEach(el => {
-        el.textContent = translate(el.getAttribute('data-i18n'));
+        const key = el.getAttribute('data-i18n');
+        const translation = translate(key);
+        
+        // If the element has an SVG (icon), only update the text portion
+        const textNode = Array.from(el.childNodes).find(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0);
+        if (textNode) {
+            textNode.textContent = translation;
+        } else {
+            el.textContent = translation;
+        }
     });
     document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
         el.placeholder = translate(el.getAttribute('data-i18n-placeholder'));
     });
 }
+
+async function checkPhotonDbSync(retry = true) {
+    try {
+        const res = await fetch(`${API_BASE}/api/photon/db-status`);
+        const data = await res.json();
+        const warning = document.getElementById('connection-warning');
+        
+        if (data.syncing && retry) {
+            // Wait for background sync to finish (retry once after 2.5s)
+            setTimeout(() => checkPhotonDbSync(false), 2500);
+            return;
+        }
+
+        if (warning) {
+            warning.style.display = data.loaded ? 'none' : 'flex';
+            const tooltip = document.getElementById('connection-tooltip');
+            if (tooltip) tooltip.textContent = translate('connection.warning');
+        }
+    } catch (e) {
+        console.error("Error checking Photon DB sync:", e);
+        const warning = document.getElementById('connection-warning');
+        if (warning) warning.style.display = 'flex';
+    }
+}
+
+// Periodically check connection if DB isn't loaded
+setInterval(() => {
+    const warning = document.getElementById('connection-warning');
+    if (warning && warning.style.display === 'flex') {
+        console.log("[NETWORK] Periodic check: Trying to sync database...");
+        checkPhotonDbSync();
+    }
+}, 60000);
 
 document.addEventListener('DOMContentLoaded', () => {
     try {
@@ -231,6 +421,18 @@ document.addEventListener('DOMContentLoaded', () => {
         initSettings();
         initPhotonPage();
         initLegalLink();
+        checkPhotonDbSync();
+        
+        // Network Listeners for Auto-Reconnect
+        window.addEventListener('online', () => {
+            console.log("[NETWORK] Connection restored. Retrying Photon sync...");
+            checkPhotonDbSync();
+        });
+        window.addEventListener('offline', () => {
+            console.log("[NETWORK] Connection lost.");
+            const warning = document.getElementById('connection-warning');
+            if (warning) warning.style.display = 'flex';
+        });
     } catch (e) {
         console.error("Critical error during initialization:", e);
     }
@@ -259,13 +461,11 @@ function initSettings() {
                     body: JSON.stringify({ language: currentLanguage })
                 });
             } catch (err) {
-                console.error('Erreur sauvegarde langue:', err);
+                console.error('Language save error:', err);
             }
         });
     }
 }
-
-
 
 
 async function loadSettings() {
@@ -285,23 +485,16 @@ async function loadSettings() {
             pathInput.value = settings.steam_path || 'C:\\Program Files (x86)\\Steam';
         }
 
-        if (settings.license_key) {
-            console.log("Restauration de la licence...");
-            verifyLicense(settings.license_key);
-        }
-        if (settings.workink_token) {
-            const tokInput = document.getElementById('gen-token');
-            if (tokInput) tokInput.value = settings.workink_token;
-        }
-
         const saveBtn = document.getElementById('save-steam-path-btn');
         if (saveBtn) {
             const newBtn = saveBtn.cloneNode(true);
             saveBtn.parentNode.replaceChild(newBtn, saveBtn);
 
             newBtn.addEventListener('click', async () => {
-                const newPath = document.getElementById('setting-steam-path').value.trim();
+                const pathInput = document.getElementById('setting-steam-path');
+                if (!pathInput) return;
 
+                const newPath = pathInput.value.trim();
                 try {
                     const r = await fetch(`${API_BASE}/api/settings`, {
                         method: 'POST',
@@ -314,11 +507,11 @@ async function loadSettings() {
                         alert(`Chemin sauvegardé : ${d.steam_path}`);
                         loadSteamAccounts();
                     } else {
-                        alert("Erreur serveur lors de la sauvegarde");
+                        alert("Server error during backup");
                     }
                 } catch (e) {
                     console.error(e);
-                    alert('Erreur réseau');
+                    alert('Network error');
                 }
             });
         }
@@ -349,7 +542,7 @@ async function loadSettings() {
 
         updateTranslations();
     } catch (err) {
-        console.error('Erreur chargement settings:', err);
+        console.error('Error loading settings:', err);
     }
 }
 
@@ -428,7 +621,7 @@ async function loadSteamAccounts() {
                         <div class="account-name">${acc.personaname}</div>
                         <div class="account-id">${acc.steamid}</div>
                     </div>
-                    ${acc.selected ? '<span class="account-badge">Actif</span>' : ''}
+                    ${acc.selected ? `<span class="account-badge">${translate('settings.active')}</span>` : ''}
                 </div>
             `).join('');
 
@@ -436,10 +629,10 @@ async function loadSteamAccounts() {
                 item.addEventListener('click', () => selectSteamAccount(item.dataset.steamid));
             });
         } else {
-            container.innerHTML = '<p>Aucun compte Steam trouvé</p>';
+            container.innerHTML = `<p>${translate('settings.no_steam_account')}</p>`;
         }
     } catch (err) {
-        console.error('Erreur comptes Steam:', err);
+        console.error('Steam account error:', err);
     }
 }
 
@@ -453,18 +646,18 @@ async function selectSteamAccount(steamid) {
 
         selectedSteamID = steamid;
 
-        await loadSteamAccounts();
-        await loadUserInfo();
-
-        console.log("Mise à jour des temps de jeu pour le nouveau compte...");
-        await fetch(`${API_BASE}/api/steam/update-playtime`, {
-            method: "POST"
+        fetch(`${API_BASE}/api/steam/update-playtime`, { method: "POST" }).then(() => {
+            loadGames();
         });
 
-        await loadGames();
+        await Promise.all([
+            loadSteamAccounts(),
+            loadUserInfo(),
+            loadGames()
+        ]);
 
     } catch (err) {
-        console.error('Erreur sélection compte ou mise à jour playtime:', err);
+        console.error('Error selecting account or Playtime update:', err);
     }
 }
 
@@ -487,7 +680,7 @@ function initToolbar() {
             const val = e.target.value.trim();
             clearTimeout(searchDebounce);
 
-            if (/^\d+$/.test(val) || val.length < 2) {
+            if (/^\d+$/.test(val) || val.length < 2 || val.includes('http') || val.includes('steam://')) {
                 autocompleteDiv.style.display = 'none';
                 return;
             }
@@ -502,19 +695,6 @@ function initToolbar() {
         });
     }
 
-    const genTokenInput = document.getElementById('gen-token');
-    if (genTokenInput) {
-        genTokenInput.addEventListener('change', async (e) => {
-            const token = e.target.value.trim();
-            try {
-                await fetch(`${API_BASE}/api/settings`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ workink_token: token })
-                });
-            } catch (e) { console.error(e); }
-        });
-    }
 
 
     const importBtn = document.getElementById('import-steam-btn');
@@ -549,6 +729,75 @@ function initToolbar() {
             if(libBtn) libBtn.classList.add('active');
         });
     }
+
+    const dropZone = document.getElementById('lua-drop-zone');
+    const luaFileInput = document.getElementById('lua-file-input');
+
+    if (dropZone && luaFileInput) {
+        dropZone.addEventListener('click', () => {
+            luaFileInput.click();
+        });
+
+        luaFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleLuaFile(e.target.files[0]);
+            }
+        });
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = 'var(--border-hover)';
+            dropZone.style.background = 'rgba(102, 192, 244, 0.05)';
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.style.borderColor = 'var(--border)';
+            dropZone.style.background = 'var(--bg-input)';
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = 'var(--border)';
+            dropZone.style.background = 'var(--bg-input)';
+
+            if (e.dataTransfer.files.length > 0) {
+                const file = e.dataTransfer.files[0];
+                handleLuaFile(file);
+            }
+        });
+    }
+}
+
+function handleLuaFile(file) {
+    console.log("Fichier Lua détecté :", file.name);
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+        const rawContent = event.target.result;
+
+        try {
+            const res = await fetch(`${API_BASE}/api/lua/upload`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filename: file.name,
+                    content: rawContent
+                })
+            });
+
+            const data = await res.json();
+            if (data.success) {
+                window.showCustomModal(`🎉 ${translate('modal.success')}`, `${translate('generate.lua_success_prefix')} ${file.name} ${translate('generate.lua_success_suffix')}`);
+            } else {
+                window.showCustomModal(`⚠️ ${translate('modal.error')}`, translate('generate.lua_error_process') + (data.error || translate('generate.lua_error_unknown')));
+            }
+        } catch (err) {
+            console.error(err);
+            window.showCustomModal(`⚠️ ${translate('modal.error')}`, translate('generate.lua_error_network'));
+        }
+    };
+
+    reader.readAsText(file);
 }
 
 function initModal() {
@@ -604,7 +853,7 @@ async function saveGame() {
         name,
         path: document.getElementById('modal-path').value.trim(),
         arguments: document.getElementById('modal-args').value.trim(),
-        steam_appid: document.getElementById('modal-appid').value.trim(),
+        steam_appid: document.getElementById('modal-appid').value.trim()
     };
 
     try {
@@ -677,6 +926,7 @@ async function loadGames() {
 }
 
 function renderGames(gamesToRender) {
+    lastRenderedGames = gamesToRender;
     const grid = document.getElementById('games-grid');
     const emptyState = document.getElementById('empty-state');
 
@@ -733,14 +983,14 @@ function createGameCard(game) {
             <div class="game-banner">
                 ${bannerUrl ?
             `<img src="${bannerUrl}" alt="${game.name}">` :
-            '<div class="no-banner">Pas de bannière</div>'
+            `<div class="no-banner">${translate('library.no_banner')}</div>`
         }
             </div>
             <div class="game-info">
                 <h3>${escapeHtml(game.name)}</h3>
                 ${playtime ? `
                     <div class="playtime">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                             <circle cx="12" cy="12" r="10"></circle>
                             <polyline points="12 6 12 12 16 14"></polyline>
                         </svg>
@@ -794,7 +1044,7 @@ function updateSelectionBar() {
 }
 
 async function deleteGame(gameId) {
-    const confirmed = await window.showCustomModal('⚠️ Suppression', 'Êtes-vous sûr de vouloir supprimer ce jeu de votre bibliothèque ?', true);
+    const confirmed = await window.showCustomModal(`⚠️ ${translate('modal.delete_title')}`, translate('modal.delete_game_desc'), true);
     if (!confirmed) return;
 
     try {
@@ -813,7 +1063,7 @@ async function deleteGame(gameId) {
 
 async function deleteSelected() {
     if (selectedGames.size === 0) return;
-    const confirmed = await window.showCustomModal('⚠️ Suppression Multiple', `Êtes-vous sûr de vouloir supprimer <b>${selectedGames.size}</b> jeu(x) ?`, true);
+    const confirmed = await window.showCustomModal(`⚠️ ${translate('modal.delete_multiple_title')}`, translate('modal.delete_multiple_desc').replace('{count}', selectedGames.size), true);
     if (!confirmed) return;
 
     try {
@@ -835,7 +1085,21 @@ async function deleteSelected() {
 }
 
 async function showGameDetails(game) {
-    currentGame = game;
+    // Fetch latest game data to refresh Photon status
+    try {
+        const gameRes = await fetch(`${API_BASE}/api/games/${game.id}`);
+        if (gameRes.ok) {
+            game = await gameRes.json();
+            currentGame = game;
+        }
+    } catch (e) { console.error("Error refreshing game data:", e); }
+
+    // Fetch Photon DNS status
+    let photonStatus = { active: false };
+    try {
+        const statusRes = await fetch(`${API_BASE}/api/photon/status`);
+        photonStatus = await statusRes.json();
+    } catch (e) { console.error("Error fetching photon status:", e); }
 
     document.getElementById('details-title').textContent = game.name;
     document.getElementById('details-playtime').textContent = formatPlaytime(game.playtime || 0);
@@ -874,9 +1138,66 @@ async function showGameDetails(game) {
         document.getElementById('details-description').innerHTML = '<p>Aucune description disponible</p>';
     }
 
+    // Elegant Glassmorphism Photon Banner Logic
+    const existingBanner = document.getElementById('photon-game-alert');
+    if (existingBanner) existingBanner.remove();
+
+    if (game.requires_photon && !photonStatus.active) {
+        console.log(`[DEBUG] Showing elegant Photon banner for ${game.name}`);
+        const banner = document.createElement('div');
+        banner.id = 'photon-game-alert';
+        banner.className = 'photon-banner';
+        banner.innerHTML = `
+            <div class="photon-banner-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                    <line x1="12" y1="9" x2="12" y2="13"></line>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+            </div>
+            <div class="photon-banner-body">
+                <div class="photon-banner-info">
+                    <div class="photon-banner-title">${translate('photon.alert_title')}</div>
+                    <div class="photon-banner-text">${translate('photon.alert_desc')}</div>
+                </div>
+                <button class="btn-photon-action" id="photon-goto-btn">
+                    ${translate('photon.alert_btn')}
+                </button>
+            </div>
+        `;
+
+        const launchGrid = document.querySelector('.launch-actions-grid');
+        if (launchGrid) {
+            launchGrid.parentNode.insertBefore(banner, launchGrid);
+        }
+
+        document.getElementById('photon-goto-btn').addEventListener('click', () => {
+            showPage('photon');
+            document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+            const photonNav = document.querySelector('.nav-item[data-page="photon"]');
+            if (photonNav) photonNav.classList.add('active');
+        });
+    }
+
     showPage('details');
 }
 
+const clearPhotonCacheBtn = document.getElementById('clear-photon-cache-btn');
+if (clearPhotonCacheBtn) {
+    clearPhotonCacheBtn.addEventListener('click', async () => {
+        try {
+            const res = await fetch(`${API_BASE}/api/photon/cache/clear`, { method: 'POST' });
+            if (res.ok) {
+                // Utilisation des clés de traduction dynamiques
+                await window.showCustomModal(`${translate('modal.success')}`, translate('photon.cache_cleared_desc'));
+            }
+        } catch (e) {
+            console.error("Error clearing cache:", e);
+        }
+    });
+} else {
+    console.warn("Bouton 'clear-photon-cache-btn' introuvable dans le DOM.");
+}
 
 
 async function loadGameDescription(gameId) {
@@ -958,7 +1279,7 @@ async function launchGame(gameId, mode) {
 }
 
 async function importSteam() {
-    const confirmed = await window.showCustomModal('🔍 Importation Steam', 'Voulez-vous lancer le scan complet de vos disques pour trouver les jeux Steam installés ?', true);
+    const confirmed = await window.showCustomModal(`🔍 ${translate('modal.import_steam_title')}`, translate('modal.import_steam_desc'), true);
     if (!confirmed) return;
 
     const btn = document.getElementById('import-steam-btn');
@@ -995,7 +1316,7 @@ async function searchSteamGames(query) {
     const autocompleteDiv = document.getElementById('steam-autocomplete-results');
     if (!autocompleteDiv) return;
 
-    autocompleteDiv.innerHTML = '<div style="padding: 12px; color: var(--text-muted); font-size: 13px; display:flex; align-items:center; gap:8px;"><svg class="spinner-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg> Recherche en cours...</div>';
+    autocompleteDiv.innerHTML = `<div style="padding: 12px; color: var(--text-muted); font-size: 13px; display:flex; align-items:center; gap:8px;"><svg class="spinner-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg> ${translate('generate.searching')}</div>`;
     autocompleteDiv.style.display = 'block';
 
     try {
@@ -1004,7 +1325,7 @@ async function searchSteamGames(query) {
         const data = await res.json();
 
         if (!data || data.length === 0) {
-            autocompleteDiv.innerHTML = '<div style="padding: 12px; color: var(--text-muted); font-size: 13px;">Aucun résultat trouvé</div>';
+            autocompleteDiv.innerHTML = `<div style="padding: 12px; color: var(--text-muted); font-size: 13px;">${translate('generate.no_result')}</div>`;
             return;
         }
 
@@ -1042,7 +1363,7 @@ async function generateGame() {
     const appid = extractAppID(rawInput);
 
     if (!appid) {
-        await window.showCustomModal('Attention', 'AppID requis (ou lien Steam valide)');
+        await window.showCustomModal(`⚠️ ${translate('modal.warning_title')}`, translate('modal.appid_required'));
         return;
     }
 
@@ -1050,9 +1371,9 @@ async function generateGame() {
     const output = document.getElementById('generate-output');
 
     btn.disabled = true;
-    btn.innerHTML = '<svg class="spinner-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 6px; margin-bottom: 0;"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg> Génération...';
+    btn.innerHTML = `<svg class="spinner-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 6px; margin-bottom: 0;"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg> ${translate('generate.generating')}`;
     output.className = 'result-box';
-    output.innerHTML = '<svg class="spinner-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg><div>Initialisation en cours...</div>';
+    output.innerHTML = `<svg class="spinner-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg><div>${translate('generate.initializing')}</div>`;
 
     try {
         const res = await fetch(`${API_BASE}/api/generate`, {
@@ -1068,18 +1389,18 @@ async function generateGame() {
         if (data.success) {
             output.className = 'result-box success';
             output.innerHTML = `<svg class="check-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
-<div><b style="font-size: 16px;">Génération Réussie !</b><br><span style="color:var(--text-secondary); font-size: 13.5px; margin-top: 5px; display:inline-block;">Jeu : ${data.game.name}<br>Désormais disponible dans votre bibliothèque.</span></div>`;
+<div><b style="font-size: 16px;">${translate('generate.success')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px; margin-top: 5px; display:inline-block;">${data.game.name}<br>${translate('generate.success_desc')}</span></div>`;
             await loadGames();
         } else {
             output.className = 'result-box error';
             output.innerHTML = `<svg class="err-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-<div><b>Erreur</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${data.error}</span></div>`;
+<div><b>${translate('generate.error')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${data.error}</span></div>`;
         }
     } catch (err) {
         console.error(err);
         output.className = 'result-box error';
         output.innerHTML = `<svg class="err-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-<div><b>Erreur Réseau</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">Impossible de contacter le serveur.</span></div>`;
+<div><b>${translate('generate.network_error')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${translate('generate.network_error_desc')}</span></div>`;
     } finally {
         btn.disabled = false;
         btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:6px;"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline></svg> ${translate('generate.button')}`;
@@ -1115,11 +1436,11 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
-    if ((e.ctrlKey || e.metaKey) && e.key === 'a' &&
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A') &&
         document.getElementById('library-page').classList.contains('active')) {
         e.preventDefault();
-        games.forEach(g => selectedGames.add(g.id));
-        renderGames(games);
+        lastRenderedGames.forEach(g => selectedGames.add(g.id));
+        renderGames(lastRenderedGames);
     }
 
     if (e.key === 'Delete' && selectedGames.size > 0) {
@@ -1158,7 +1479,9 @@ async function loadServers() {
                 <td style="padding: 10px;">${escapeHtml(s.ServerName)}</td>
                 <td style="padding: 10px;">${s.ServerCapacity} / ${s.MaxCapacity}</td>
                 <td style="padding: 10px;"><span class="account-badge" style="background: var(--bg-input);">${escapeHtml(s.GameName)}</span></td>
+                <td style="padding: 10px;">
                     <button class="btn-toolbar" onclick="reserveServer('${s.ServerId}', '${escapeHtml(s.ServerName).replace(/'/g, "\\'")}', '${escapeHtml(s.GameName).replace(/'/g, "\\'")}')">Rejoindre</button>
+                </td>
             </tr>
         `).join('');
     } catch (err) {
@@ -1168,7 +1491,7 @@ async function loadServers() {
 }
 
 window.reserveServer = async function (serverId, serverName, gameName) {
-    const confirmed = await window.showCustomModal('Rejoindre', `Voulez-vous rejoindre le serveur "<b style="color:var(--accent);">${serverName}</b>" ?`, true);
+    const confirmed = await window.showCustomModal(translate('modal.join_title'), translate('modal.join_desc').replace('{server}', serverName), true);
     if (!confirmed) return;
 
     let gameToLaunch = null;
@@ -1181,7 +1504,7 @@ window.reserveServer = async function (serverId, serverName, gameName) {
     }
 
     if (gameToLaunch) {
-        await window.showCustomModal('Connexion', `Lancement automatique de <b style="color:var(--accent);">${gameToLaunch.name}</b> et connexion au serveur en cours...`);
+        await window.showCustomModal(translate('modal.connecting_title'), translate('modal.connecting_desc').replace('{game}', gameToLaunch.name));
         try {
             const res = await fetch(`${API_BASE}/api/games/${gameToLaunch.id}/launch`, {
                 method: 'POST',
@@ -1200,7 +1523,7 @@ window.reserveServer = async function (serverId, serverName, gameName) {
             await window.showCustomModal("Erreur", "Erreur réseau impossible de joindre le launcher backend.");
         }
     } else {
-        await window.showCustomModal("Attention", `Le jeu "<b style="color:var(--accent);">${gameName}</b>" n'a pas été trouvé dans votre bibliothèque pour le lancement automatique.`);
+        await window.showCustomModal(`⚠️ ${translate('modal.warning_title')}`, translate('modal.game_not_found').replace('{game}', gameName));
     }
 };
 
@@ -1232,10 +1555,14 @@ async function checkPhotonStatus() {
         const res = await fetch(`${API_BASE}/api/photon/status`);
         const data = await res.json();
         
-        statusEl.className = 'status-indicator ' + data.status;
         const statusText = statusEl.querySelector('.status-text');
-        if (statusText) {
-            statusText.textContent = data.status === 'configured' ? 'Patched' : 'Not Patched';
+        
+        if (data.active) {
+            statusEl.className = 'photon-status-pill configured';
+            if (statusText) statusText.textContent = translate('photon.status_configured');
+        } else {
+            statusEl.className = 'photon-status-pill not_configured';
+            if (statusText) statusText.textContent = translate('photon.status_not_configured');
         }
     } catch (e) {
         console.error("Erreur status photon:", e);
@@ -1260,7 +1587,7 @@ async function editPhotonWithNotepad() {
 }
 
 async function deletePhotonEntries() {
-    const confirmed = await window.showCustomModal('⚠️ Suppression', 'Voulez-vous vraiment supprimer la configuration DNS pour Photon ? Une élévation Admin sera demandée.', true);
+    const confirmed = await window.showCustomModal(`⚠️ ${translate('modal.delete_title')}`, translate('modal.delete_photon_desc'), true);
     if (!confirmed) return;
 
     try {
@@ -1281,7 +1608,7 @@ async function deletePhotonEntries() {
 function copyPhotonEntries() {
     const entries = "51.195.118.216 ns.exitgames.io\n51.195.118.216 ns.exitgames.com\n51.195.118.216 ns.photonengine.io\n51.195.118.216 ns.photonengine.com";
     navigator.clipboard.writeText(entries).then(() => {
-        window.showCustomModal('🎉 Copié', 'La configuration DNS a été copiée dans votre presse-papiers.');
+        window.showCustomModal(`🎉 ${translate('modal.copied')}`, translate('modal.copied_desc'));
     }).catch(err => {
         console.error('Erreur copie:', err);
     });
@@ -1300,7 +1627,7 @@ async function updateGameAppId(gameId, newAppId) {
             body: JSON.stringify(game)
         });
         
-        await window.showCustomModal('AppID Assistant', 'AppID mis à jour avec succès !');
+        await window.showCustomModal(`🎉 ${translate('modal.appid_assistant')}`, translate('modal.appid_updated'));
         loadGames();
         loadGameDetails(gameId);
     } catch (err) {
@@ -1312,5 +1639,14 @@ function initLegalLink() {
     console.log("Legal link initialized via standard navigation.");
 }
 
-
-
+async function togglePhoton(gameId, value) {
+    try {
+        await fetch(`${API_BASE}/api/games/${gameId}/photon-toggle`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requires_photon: value })
+        });
+    } catch (err) {
+        console.error('[PHOTON] Toggle error:', err);
+    }
+}
