@@ -2,40 +2,54 @@
 # You are allowed to use, modify, and redistribute this software for non-commercial purposes only.
 # Sources:
 # - Unpacker/Steamless: https://github.com/atom0s/Steamless
-# - Steam File Generation (depotkeys.json and appaccesstokens.json): https://gitlab.com/steamautocracks/manifesthub
-
-import sys
+# - Steamtool : https://github.com/OpenSteam001/OpenSteamTool
 import os
+import sys
+import threading
+import io
+import hashlib
 import re
 import json
 import uuid
 import subprocess
 import time
+import zipfile
 from pathlib import Path
-from datetime import datetime
-from flask import Flask, jsonify, send_file, request, abort, send_from_directory, Response
+from flask import Flask, jsonify, send_file, request, abort, send_from_directory, Response, redirect
 from flask_cors import CORS
 import requests
 import vdf
 import urllib3
 import traceback
 import shutil
+import mimetypes
+_logs = []
+
+def log(msg):
+    _logs.append(msg)
+    if len(_logs) > 100:
+        _logs.pop(0)
+    print(msg)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def get_frontend_dir():
-    path_exe = BASE_DIR / 'frontend'
-    if path_exe.exists():
-        return path_exe
-
-    path_dev = BASE_DIR.parent / 'frontend'
-    if path_dev.exists():
-        return path_dev
-
-    return None
 
 app = Flask(__name__)
 CORS(app)
+app.config['JSON_AS_ASCII'] = False
+app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
+
+@app.after_request
+def add_header(response):
+    if response.mimetype and ('text/' in response.mimetype or 'javascript' in response.mimetype):
+        response.charset = 'utf-8'
+    return response
+
+@app.after_request
+def force_utf8_charset(response):
+    if response.mimetype == 'application/json':
+        response.headers['Content-Type'] = 'application/json; charset=utf-8'
+    return response
 
 DEV_MODE = False
 
@@ -56,6 +70,36 @@ UNPACKER_EXE = BASE_DIR / "Unpacker" / "ClemtoutLauncher.CLI.exe"
 STEAMCMD_PATH = BASE_DIR / "steamcmd" / "steamcmd.exe"
 DEPOT_KEYS_FILE_PATH = BASE_DIR / "depotkeys.json"
 TOKENS_FILE_PATH = BASE_DIR / "appaccesstokens.json"
+PHOTON_CACHE_FILE = USER_DIR / 'photon_cache.json'
+STEAM_API_URL = "https://store.steampowered.com/api/appdetails?appids="
+BACKUP_API_URL = "https://kyzu-proxy.ucupbaba1906.workers.dev/secure_download?appid={appid}&auth_code=RYUUMANIFEST72oz"
+
+def get_frontend_dir():
+    path_exe = BASE_DIR / 'frontend'
+    if path_exe.exists():
+        return path_exe
+
+    path_dev = BASE_DIR.parent / 'frontend'
+    if path_dev.exists():
+        return path_dev
+
+    return None
+
+def load_photon_cache():
+    if not PHOTON_CACHE_FILE.exists():
+        return {}
+    try:
+        with open(PHOTON_CACHE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_photon_cache(cache):
+    try:
+        with open(PHOTON_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=4)
+    except:
+        pass
 
 import winreg
 
@@ -183,11 +227,7 @@ if not SETTINGS_FILE.exists():
         }, f)
 
 def get_loader_path():
-    stable_loader = EXE_DIR / "game_loader.exe"
-    if not stable_loader.exists():
-        shutil.copy2(BASE_DIR / "game_loader.exe", stable_loader)
-        shutil.copy2(BASE_DIR / "steam_api64.dll", EXE_DIR / "steam_api64.dll")
-    return stable_loader
+    return BASE_DIR / "game_loader.exe"
 
 def get_insensitive(data, *keys):
     current = data
@@ -313,10 +353,19 @@ def download_steam_banner(appid):
     if filepath.exists():
         return filename
 
-    urls = [
+    urls = []
+    
+    # Try to get the official URL from the Steam API first
+    details = get_steam_game_details(appid)
+    if details and details.get("header_image"):
+        urls.append(details["header_image"])
+
+    # Fallbacks
+    urls.extend([
         f"https://cdn.akamai.steamstatic.com/steam/apps/{appid}/header.jpg",
         f"https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/header.jpg",
-    ]
+        f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid}/header.jpg",
+    ])
 
     for url in urls:
         try:
@@ -351,149 +400,173 @@ def get_steam_game_details(appid, lang="french"):
         return None
 
 
+def get_file_hash(file_path: str) -> str:
+    hasher = hashlib.sha256()
+    try:
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(8192):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception:
+        return ""
+
+
+def needs_launchertools_update(steam_base_path: str) -> bool:
+    """ Checks if the launchertools files in Steam are missing or corrupted based on SHA-256 hashes. """
+    source_dir = BASE_DIR / "launchertools"
+    if not source_dir.exists():
+        return False  # Nothing to sync
+
+    for root, dirs, files in os.walk(source_dir):
+        for file in files:
+            source_file = os.path.join(root, file)
+            rel_path = os.path.relpath(source_file, source_dir)
+            target_file = os.path.join(steam_base_path, rel_path)
+
+            # If file is missing, update is required
+            if not os.path.exists(target_file):
+                return True
+
+            # If hash is different, update is required
+            if get_file_hash(source_file) != get_file_hash(target_file):
+                return True
+
+    return False
+
+
+def ensure_steam_patched(steam_base_path: str):
+    """ Kills Steam if an update is needed, patches files, and restarts it. """
+    if needs_launchertools_update(steam_base_path):
+        print("[*] Steam patch required. Checking if Steam is running...")
+
+        # Check if Steam is running
+        try:
+            output = subprocess.check_output('tasklist /FI "IMAGENAME eq steam.exe" /NH', shell=True, text=True)
+            steam_running = "steam.exe" in output.lower()
+        except Exception:
+            steam_running = False
+
+        # Kill Steam if it's running
+        if steam_running:
+            print("[!] Closing Steam to apply patch...")
+            subprocess.run(["taskkill", "/F", "/IM", "steam.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(2)  # Give it some time to close completely
+
+        # Apply the patch
+        sync_launchertools(steam_base_path)
+
+        # Restart Steam if we killed it
+        if steam_running:
+            print("[+] Restarting Steam...")
+            steam_exe = os.path.join(steam_base_path, "steam.exe")
+            if os.path.exists(steam_exe):
+                subprocess.Popen([steam_exe])
+    else:
+        print("[+] Steam is already correctly patched.")
+
+
+def sync_launchertools(steam_base_path: str):
+    source_dir = BASE_DIR / "launchertools"
+    if not source_dir.exists():
+        print(f"[-] The source folder 'launchertools' could not be found at the location : {source_dir}")
+        return
+
+    for root, dirs, files in os.walk(source_dir):
+        for file in files:
+            source_file = os.path.join(root, file)
+
+            rel_path = os.path.relpath(source_file, source_dir)
+            target_file = os.path.join(steam_base_path, rel_path)
+
+            os.makedirs(os.path.dirname(target_file), exist_ok=True)
+
+            if os.path.exists(target_file):
+                if get_file_hash(source_file) == get_file_hash(target_file):
+                    continue
+                else:
+                    print(f"[!] Corrupted or updated file detected, replacing : {rel_path}")
+            else:
+                print(f"[+] Installing the file : {rel_path}")
+
+            shutil.copy2(source_file, target_file)
+
+
 def process_appid(appid: str, base_dir: str):
-    output_dir = os.path.join(base_dir, str(appid))
+    steam_path = get_steam_install_path()
+    output_dir = os.path.join(steam_path, "config", "lua")
     os.makedirs(output_dir, exist_ok=True)
 
-    json_file_path = os.path.join(output_dir, f"{appid}.json")
-    if os.path.exists(json_file_path):
-        return output_dir, f"AppID {appid} already processed"
+    lua_file_path = os.path.join(output_dir, f"{appid}.lua")
 
-    if not os.path.exists(STEAMCMD_PATH):
-        raise FileNotFoundError(f"SteamCMD not found: {STEAMCMD_PATH}")
+    if os.path.exists(lua_file_path):
+        os.remove(lua_file_path)
+
+    sync_launchertools(steam_path)
+
+    print(f"[*] Querying Kyzu API for {appid}...")
+    url_fallback = BACKUP_API_URL.format(appid=appid)
+
     try:
-        process = subprocess.Popen(
-            [STEAMCMD_PATH, "+login", "anonymous", f"+app_info_print {appid}", "+quit"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=os.path.dirname(STEAMCMD_PATH),
-            creationflags=0x08000000
-        )
-        out, err = process.communicate(timeout=30)
+        response = requests.get(url_fallback, timeout=30)
+        if response.status_code == 200 and response.content:
+            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                for filename in z.namelist():
+                    if filename.endswith('.lua'):
+                        lua_content = z.read(filename).decode('utf-8', errors='ignore')
 
-        try:
-            raw_info = out.decode("utf-8", errors="replace")
-        except UnicodeDecodeError:
-            raw_info = out.decode("cp1252", errors="replace")
+                        with open(lua_file_path, "w", encoding="utf-8", newline="\n") as f:
+                            f.write(lua_content)
 
-    except FileNotFoundError:
-        return None, f"Error: SteamCMD.exe not found at {STEAMCMD_PATH}"
-    except subprocess.TimeoutExpired:
-        return None, f"Error: SteamCMD request for AppID {appid} expired."
-    debug_file = os.path.join(output_dir, f"{appid}_steamcmd_raw.txt")
-    try:
-        with open(debug_file, "w", encoding="utf-8", errors="ignore") as f:
-            f.write(raw_info)
-    except Exception:
-        pass
+                        return output_dir, f"Lua file for {appid} retrieved from API."
 
-    if process.returncode != 0:
-        if "app info not found" in raw_info.lower():
-            return None, f"AppID {appid} not found or not public. Ignored."
+            return None, "No .lua file found in the API response."
         else:
-            return None, f"SteamCMD error for {appid}: {err.decode(errors='ignore')}"
+            return None, (f"The API returned an error: {response.status_code}. "
+                          f"Please find the Lua file elsewhere and drag and drop it into the designated area")
 
-    if not raw_info.strip():
-        return None, f"SteamCMD returned an empty output for AppID {appid}."
-
-    match = re.search(rf'("{appid}"\s*\{{.*?\n\}})', raw_info, re.DOTALL)
-    if not match:
-        return None, f"Could not find VDF block for AppID {appid}. See {debug_file}."
-
-    vdf_text = match.group(1)
-
-    try:
-        data = vdf.loads(vdf_text)
     except Exception as e:
-        return None, f"VDF error for AppID {appid}: {e}. See {debug_file}"
+        return None, f"Backup API error: {e}"
 
-    appdata = data.get(appid, {})
 
-    depots = appdata.get("depots", {})
+@app.route('/api/lua/upload', methods=['POST'])
+def api_lua_upload():
+    req_data = request.get_json()
+    if not req_data:
+        return jsonify({"error": "Aucune donnée reçue"}), 400
+
+    filename = req_data.get('filename')
+    content = req_data.get('content')
+
+    if not filename or not content:
+        return jsonify({"error": "Nom de fichier ou contenu manquant"}), 400
+
     try:
-        game_name = appdata["common"]["name"]
-    except (KeyError, TypeError):
-        game_name = f"AppID {appid}"
+        lines = content.splitlines()
+        cleaned_lines = [line for line in lines if "SetManifestId" not in line]
+        cleaned_content = "\n".join(cleaned_lines)
 
-    try:
-        with open(DEPOT_KEYS_FILE_PATH, 'r', encoding='utf-8') as f:
-            depot_keys = {str(k): v for k, v in json.load(f).items()}
-        with open(TOKENS_FILE_PATH, 'r', encoding='utf-8') as f:
-            tokens = {str(k): v for k, v in json.load(f).items()}
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"Required file not found: {e}")
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Error reading JSON file: {e}")
+        steam_path = get_steam_install_path()
+        output_dir = os.path.join(steam_path, "config", "lua")
+        os.makedirs(output_dir, exist_ok=True)
 
-    lua_lines = [f"addappid({appid})"]
-    if "access_token" in appdata:
-        lua_lines.append(f'addtoken({appid},"{appdata["access_token"]}")')
+        lua_file_path = os.path.join(output_dir, filename)
 
-    json_data = {
-        "appid": int(appid),
-        "name": game_name,
-        "type": appdata.get("common", {}).get("type"),
-        "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "depot": {}
-    }
-    depot_vdf_data = {}
+        if os.path.exists(lua_file_path):
+            os.remove(lua_file_path)
 
-    if "isfreeapp" in appdata: json_data["isfreeapp"] = appdata.get("isfreeapp")
-    if "change_number" in appdata: json_data["change_number"] = appdata.get("change_number")
-    if "schinese_name" in appdata.get("common", {}):
-        json_data["schinese_name"] = appdata.get("common", {}).get("schinese_name")
+        with open(lua_file_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(cleaned_content)
 
-    for depot_id, depot_info in depots.items():
-        if not depot_id.isdigit():
-            continue
+        if 'sync_launchertools' in globals():
+            sync_launchertools(steam_path)
 
-        json_data["depot"][depot_id] = depot_info
+        return jsonify({
+            "success": True,
+            "message": f"Fichier {filename} installé sans modification de nom."
+        })
 
-        key = depot_keys.get(depot_id)
-        manifest_gid = depot_info.get("manifests", {}).get("public", {}).get("gid")
-
-        if key and manifest_gid:
-            lua_lines.append(f'addappid({depot_id},0,"{key}")')
-            lua_lines.append(f'setManifestid({depot_id},"{manifest_gid}")')
-        elif key:
-            lua_lines.append(f'addappid({depot_id},0,"{key}")')
-        elif manifest_gid:
-            lua_lines.append(f'addappid({depot_id})')
-            lua_lines.append(f'setManifestid({depot_id},"{manifest_gid}")')
-        else:
-            lua_lines.append(f'addappid({depot_id})')
-
-        if key:
-            json_data["depot"][depot_id]["decryptionkey"] = key
-            depot_vdf_data[depot_id] = {"DecryptionKey": key}
-
-        depot_token = tokens.get(depot_id)
-        if depot_token:
-            lua_lines.append(f'addtoken({depot_id},"{depot_token}")')
-
-    if depot_vdf_data:
-        vdf_content = ["\"depots\"", "{"]
-        for depot_id, depot_info in depot_vdf_data.items():
-            key = depot_info.get("DecryptionKey")
-            vdf_content.append(f"    \"{depot_id}\"")
-            vdf_content.append("    {")
-            vdf_content.append(f"        \"DecryptionKey\" \"{key}\"")
-            vdf_content.append("    }")
-        vdf_content.append("}")
-        vdf_final = "\n".join(vdf_content)
-
-        with open(os.path.join(output_dir, f"{appid}.vdf"), "w", encoding="utf-8", newline="\n") as f:
-            f.write(vdf_final)
-    else:
-        return None, f"AppID {appid} has no depots with keys. Ignored."
-
-    with open(os.path.join(output_dir, f"{appid}.lua"), "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lua_lines))
-
-    with open(os.path.join(output_dir, f"{appid}.json"), "w", encoding="utf-8", newline="\n") as f:
-        json.dump(json_data, f, indent=4, ensure_ascii=False)
-
-    return output_dir, game_name
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 def get_playtime_for_account(steam_path: str, steamid64: str, appid: str) -> int:
     steamid32 = convert_steamid64_to_32(steamid64)
@@ -561,12 +634,30 @@ def index():
 
     return f"Error : No index.html found. Checked in {BASE_DIR} and {BASE_DIR.parent}", 404
 
+
 @app.route('/<path:path>')
 def static_files(path):
     frontend_dir = get_frontend_dir()
     if frontend_dir:
-        return send_from_directory(frontend_dir, path)
+        file_path = frontend_dir / path
+        if file_path.exists():
+            # Détection automatique du type de fichier (png, svg, json...)
+            mimetype, _ = mimetypes.guess_type(path)
+
+            # Correction stricte pour Edge Chromium (WebView2)
+            if path.endswith('.css'):
+                mimetype = 'text/css'
+            elif path.endswith('.js'):
+                mimetype = 'text/javascript'
+
+            return send_from_directory(frontend_dir, path, mimetype=mimetype)
+
     return "Not Found", 404
+
+
+@app.route('/banners/<filename>')
+def serve_banners(filename):
+    return send_from_directory(str(BANNERS_DIR), filename)
 
 
 @app.route('/api/settings', methods=['GET', 'POST'])
@@ -616,7 +707,7 @@ def api_accounts():
 def api_avatar(steamid):
     path = find_avatar_path(steamid)
     if not path:
-        abort(404)
+        return redirect("https://images.steamusercontent.com/ugc/868480752636433334/1D2881C5C9B3AD28A1D8852903A8F9E1FF45C2C8/")
     return send_file(path, mimetype="image/png")
 
 
@@ -666,15 +757,22 @@ def api_select_steam_account():
     settings = load_settings()
     settings['selected_steam_account'] = steamid
     save_settings(settings)
-    import threading
 
-    threading.Thread(
-        target=lambda: requests.post(
-            "http://127.0.0.1:8000/api/steam/update-playtime-for-selected",
-            timeout=5
-        ),
-        daemon=True
-    ).start()
+    def quick_update():
+        steam_path = settings.get("steam_path", str(STEAM_PATH))
+        data = load_games()
+        for game in data.get("games", []):
+            appid = game.get("steam_appid")
+            if appid and steamid:
+                try:
+                    if "playtime" not in game or not isinstance(game["playtime"], dict):
+                        game["playtime"] = {}
+                    game["playtime"][steamid] = get_playtime_for_account(steam_path, steamid, str(appid))
+                except:
+                    pass
+        save_games(data)
+
+    threading.Thread(target=quick_update, daemon=True).start()
 
     return jsonify({"success": True})
 
@@ -699,7 +797,11 @@ def api_steam_search():
 
 @app.route('/api/games')
 def api_games():
-    return jsonify(load_games())
+    data = load_games()
+    # Compute Photon status dynamically for each game
+    for game in data['games']:
+        game['requires_photon'] = check_is_photon(game.get('steam_appid'))
+    return jsonify(data)
 
 @app.route('/api/games', methods=['POST'])
 def api_add_game():
@@ -729,11 +831,38 @@ def api_update_game(game_id):
         if g['id'] == game_id:
             game_data['id'] = game_id
             game_data['playtime'] = g.get('playtime', 0)
+            
+            # Preserve old banner if not provided
+            if 'banner' not in game_data or not game_data['banner']:
+                game_data['banner'] = g.get('banner')
+                
+                # If appid changed, try to download a new banner
+                new_appid = str(game_data.get('steam_appid', ''))
+                old_appid = str(g.get('steam_appid', ''))
+                if new_appid and new_appid != old_appid:
+                    new_banner = download_steam_banner(new_appid)
+                    if new_banner:
+                        game_data['banner'] = new_banner
+
+            # Preserve requires_photon
+            if 'requires_photon' not in game_data:
+                game_data['requires_photon'] = g.get('requires_photon', False)
+
             data['games'][i] = game_data
             if save_games(data):
                 return jsonify(game_data)
             return jsonify({"error": "Failed to save"}), 500
 
+    return jsonify({"error": "Game not found"}), 404
+
+@app.route('/api/games/<game_id>', methods=['GET'])
+def api_get_game(game_id):
+    data = load_games()
+    for g in data['games']:
+        if g['id'] == game_id:
+            # Always compute fresh
+            g['requires_photon'] = check_is_photon(g.get('steam_appid'))
+            return jsonify(g)
     return jsonify({"error": "Game not found"}), 404
 
 @app.route('/api/games/<game_id>', methods=['DELETE'])
@@ -815,7 +944,7 @@ def detect_game_path(game_path):
             if shipping_dir.exists():
                 shipping_exes = list(shipping_dir.glob("*Shipping.exe"))
                 if not shipping_exes:
-                    shipping_exes = [f for f in shipping_dir.glob("*.exe") if not any(bad in f.name.lower() for bad in ["crash", "dumper", "report"])]
+                    shipping_exes = [f for f in shipping_dir.glob("*.exe") if "crash" not in f.name.lower()]
                 
                 if shipping_exes:
                     shipping_exes.sort(key=lambda x: x.stat().st_size, reverse=True)
@@ -832,7 +961,7 @@ def detect_game_path(game_path):
                 
             if "Binaries" in dirs and "Win64" in os.listdir(Path(root) / "Binaries"):
                 win64_path = Path(root) / "Binaries" / "Win64"
-                exes = [f for f in win64_path.glob("*.exe") if "shipping" in f.name.lower() and not any(bad in f.name.lower() for bad in ["crash", "dumper", "report"])]
+                exes = [f for f in win64_path.glob("*.exe") if "shipping" in f.name.lower()]
                 if exes:
                     exes.sort(key=lambda x: x.stat().st_size, reverse=True)
                     return str(exes[0])
@@ -842,6 +971,67 @@ def detect_game_path(game_path):
 
     return game_path
 
+
+# Photon SDK Database Cache
+PHOTON_DB = None
+PHOTON_DB_URL = "https://raw.githubusercontent.com/0xst4ck-dev/Data_SDK/refs/heads/main/photon_appids.json"
+PHOTON_SYNC_IN_PROGRESS = False
+
+def sync_photon_db_task():
+    global PHOTON_DB, PHOTON_SYNC_IN_PROGRESS
+    try:
+        PHOTON_SYNC_IN_PROGRESS = True
+        print("[PHOTON] Syncing database from GitHub (2s timeout)...")
+        response = requests.get(PHOTON_DB_URL, timeout=2)
+        if response.status_code == 200:
+            data = response.json()
+            PHOTON_DB = set(data.get("appids", []))
+            print(f"[PHOTON] Sync successful. {len(PHOTON_DB)} AppIDs loaded.")
+        else:
+            print(f"[PHOTON] Sync failed: Status {response.status_code}")
+    except Exception as e:
+        print(f"[PHOTON] Sync timed out or failed: {e}")
+        PHOTON_DB = set() # Empty set to avoid NoneType errors
+    finally:
+        PHOTON_SYNC_IN_PROGRESS = False
+
+
+def load_photon_db():
+    global PHOTON_DB, PHOTON_SYNC_IN_PROGRESS
+    if PHOTON_DB is not None:
+        return PHOTON_DB
+
+    if not PHOTON_SYNC_IN_PROGRESS:
+        threading.Thread(target=sync_photon_db_task, daemon=True).start()
+
+    return set()
+
+def check_is_photon(steam_appid):
+    """Radically simplified Photon detection based on SteamDB AppID list."""
+    if not steam_appid:
+        return False
+    
+    try:
+        appid_int = int(steam_appid)
+        db = load_photon_db()
+        if appid_int in db:
+            print(f"[PHOTON] AppID {appid_int} detected in database.")
+            return True
+    except:
+        pass
+        
+    return False
+
+
+def get_clean_env():
+    env = os.environ.copy()
+    env.pop('PYTHONHOME', None)
+    env.pop('PYTHONPATH', None)
+    return env
+
+@app.route('/api/logs')
+def api_logs():
+    return jsonify(_logs)
 
 @app.route('/api/games/<game_id>/launch', methods=['POST'])
 def api_launch_game(game_id):
@@ -856,26 +1046,21 @@ def api_launch_game(game_id):
 
     game_path = game.get('path')
 
-    print(f"[DEBUG] BASE_DIR = {BASE_DIR}")
-    print(f"[DEBUG] GAME_LOADER_EXE = {GAME_LOADER_EXE}")
-    print(f"[DEBUG] GAME_LOADER existe ? {GAME_LOADER_EXE.exists()}")
-    print(f"[DEBUG] steam_api64.dll existe ? {(BASE_DIR / 'steam_api64.dll').exists()}")
-    print(f"[DEBUG] game path = {game_path}")
-    print(f"[DEBUG] game path existe ? {Path(game_path).exists() if game_path else 'None'}")
-
     try:
         original_path = Path(game_path).resolve()
         backup_path = original_path.with_suffix(".pack")
-
         target_exe = str(original_path)
 
         if mode == 'direct':
             subprocess.Popen([target_exe], cwd=str(original_path.parent), creationflags=0x08000000)
             game["last_played"] = int(time.time())
             save_games(games_data)
-            return jsonify({"success": True, "message": "Lancé en mode direct"})
+            return jsonify({"success": True, "message": "Launched in direct mode"})
 
-        if not GAME_LOADER_EXE.exists():
+        loader_path = str(get_loader_path())
+        loader_dir = str(Path(loader_path).parent)
+
+        if not Path(loader_path).exists():
             return jsonify({"error": f"Loader introuvable : {loader_path}"}), 400
 
         target_appid = "480"
@@ -900,9 +1085,6 @@ def api_launch_game(game_id):
             except Exception as unpack_e:
                 print(f"Unpack error: {unpack_e}")
 
-        loader_path = str(get_loader_path())
-        loader_dir = str(Path(loader_path).parent)
-
         result = subprocess.run(
             [loader_path, target_exe],
             cwd=loader_dir,
@@ -911,13 +1093,10 @@ def api_launch_game(game_id):
             text=True,
             timeout=10
         )
-        print(f"[DEBUG] game_loader stdout: {result.stdout}")
-        print(f"[DEBUG] game_loader stderr: {result.stderr}")
-        print(f"[DEBUG] game_loader returncode: {result.returncode}")
 
         game["last_played"] = int(time.time())
         save_games(games_data)
-        return jsonify({"success": True, "message": "Jeu lancé"})
+        return jsonify({"success": True, "message": "Game launch"})
 
     except Exception as e:
         print(f"[LAUNCH ERROR] {traceback.format_exc()}")
@@ -934,6 +1113,15 @@ def api_update_playtime(game_id):
     save_games(data)
     return jsonify({"success": True})
 
+@app.route('/api/debug')
+def api_debug():
+    return jsonify({
+        "executable": sys.executable,
+        "frozen": getattr(sys, 'frozen', False),
+        "meipass": getattr(sys, '_MEIPASS', None),
+        "cwd": os.getcwd(),
+        "path": os.environ.get('PATH', '')[:500]
+    })
 
 def scan_all_drives():
     steam_paths = []
@@ -968,12 +1156,16 @@ def api_update_steam_playtime():
     data = load_games()
     settings = load_settings()
     steam_path = settings.get('steam_path', str(STEAM_PATH))
+    steamid64 = settings.get("selected_steam_account")
 
     for game in data.get("games", []):
         appid = game.get("steam_appid")
         if appid:
             try:
-                game["playtime"] = get_steam_playtime_from_config(steam_path, str(appid))
+                if steamid64:
+                    game["playtime"] = get_playtime_for_account(steam_path, steamid64, str(appid))
+                else:
+                    game["playtime"] = 0
             except Exception as e:
                 print(f"[WARN] Impossible de récupérer playtime pour {appid}: {e}")
 
@@ -1002,18 +1194,14 @@ def api_import_steam_fixed():
         if p not in libraries:
             libraries.append(p)
 
-    print(f"[DEBUG] Liste finale des dossiers à scanner : {libraries}")
-
     for lib_path in libraries:
         steamapps_path = lib_path / "steamapps"
         if not steamapps_path.exists(): continue
 
-        print(f"[INFO] Scan en cours : {steamapps_path}")
 
         try:
             files = os.listdir(steamapps_path)
         except Exception as e:
-            print(f"[ERREUR] Impossible de lire {steamapps_path}: {e}")
             continue
 
         for fname in files:
@@ -1042,6 +1230,9 @@ def api_import_steam_fixed():
 
                     playtime = get_local_steam_playtime(appid)
 
+                    # Automatic Photon Engine detection
+                    is_photon = check_is_photon(str(appid)) if appid else False
+
                     data['games'].append({
                         "id": str(uuid.uuid4()),
                         "name": name,
@@ -1049,15 +1240,15 @@ def api_import_steam_fixed():
                         "arguments": "",
                         "steam_appid": appid,
                         "banner": download_steam_banner(appid),
-                        "playtime": playtime
+                        "playtime": playtime,
+                        "requires_photon": is_photon
                     })
 
                     existing_appids.add(appid)
                     imported_count += 1
-                    print(f"[SUCCES] Jeu ajouté : {name} (Playtime: {playtime} min)")
 
                 except Exception as e:
-                    print(f"[ERREUR] {fname}: {e}")
+                    print(f"[Error] {fname}: {e}")
 
     if imported_count > 0:
         save_games(data)
@@ -1069,7 +1260,7 @@ def api_import_steam_fixed():
 def api_generate():
     req_data = request.get_json()
     if not req_data:
-        return jsonify({"error": "Aucune donnée reçue"}), 400
+        return jsonify({"error": "No data received"}), 400
 
     appid = req_data.get('appid')
 
@@ -1081,12 +1272,6 @@ def api_generate():
         if not output_dir:
             return jsonify({"error": game_name}), 500
 
-        import webbrowser, pathlib
-        try:
-            webbrowser.open(pathlib.Path(output_dir).resolve().as_uri())
-        except Exception as e:
-            print(f"Impossible to open folder: {e}")
-
         return jsonify({
             "success": True,
             "game": {"name": game_name},
@@ -1097,6 +1282,44 @@ def api_generate():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/lua/upload', methods=['POST'])
+def api_lua_upload_custom():
+    req_data = request.get_json()
+    if not req_data:
+        return jsonify({"error": "No data received"}), 400
+
+    appid = req_data.get('appid')
+    content = req_data.get('content')
+
+    if not appid or not content:
+        return jsonify({"error": "Missing AppID or content"}), 400
+
+    try:
+        lines = content.splitlines()
+        cleaned_lines = [line for line in lines if "setmanifest" not in line]
+        cleaned_content = "\n".join(cleaned_lines)
+
+        steam_path = get_steam_install_path()
+        output_dir = os.path.join(steam_path, "config", "lua")
+        os.makedirs(output_dir, exist_ok=True)
+
+        lua_file_path = os.path.join(output_dir, f"{appid}.lua")
+
+        if os.path.exists(lua_file_path):
+            os.remove(lua_file_path)
+        with open(lua_file_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(cleaned_content)
+        sync_launchertools(steam_path)
+
+        return jsonify({
+            "success": True,
+            "message": f"Fichier .lua installé pour {appid} dans {output_dir}"
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 def find_game_executable(install_dir, game_name):
     install_dir = Path(install_dir)
@@ -1106,9 +1329,9 @@ def find_game_executable(install_dir, game_name):
     root_exes = list(install_dir.glob("*.exe"))
 
     blacklist = [
-        "crash", "dumper", "report", "setup", "install",
+        "unitycrashhandler", "crashreport", "setup", "install",
         "uninstall", "vcredist", "python", "steamcmd", "clemtoutlauncher",
-        "game_loader", "helper", "overlay", "config", "touch", "anticheat",
+        "game_loader", "helper", "overlay", "config", "touch"
     ]
 
     candidates = [exe for exe in root_exes if not any(bad in exe.name.lower() for bad in blacklist)]
@@ -1145,6 +1368,21 @@ def api_banner(filename):
 def api_status():
     return jsonify({"dev_mode": DEV_MODE})
 
+@app.route('/api/games/<game_id>/photon-toggle', methods=['PUT'])
+def api_photon_toggle(game_id):
+    """Manually toggle the requires_photon flag for a game."""
+    req_data = request.get_json()
+    data = load_games()
+
+    for game in data['games']:
+        if game['id'] == game_id:
+            game['requires_photon'] = bool(req_data.get('requires_photon', False))
+            if save_games(data):
+                return jsonify({"success": True, "requires_photon": game['requires_photon']})
+            return jsonify({"error": "Failed to save"}), 500
+
+    return jsonify({"error": "Game not found"}), 404
+
 @app.route('/api/photon/status')
 def api_photon_status():
     hosts_path = r"C:\Windows\System32\drivers\etc\hosts"
@@ -1168,10 +1406,13 @@ def api_photon_status():
                 all_present = False
                 break
         
-        return jsonify({"status": "configured" if all_present else "not_configured"})
+        return jsonify({
+            "status": "configured" if all_present else "not_configured",
+            "active": all_present
+        })
     except Exception as e:
         print(f"[PHOTON STATUS ERROR] {e}")
-        return jsonify({"status": "unknown", "error": str(e)})
+        return jsonify({"status": "unknown", "active": False, "error": str(e)})
 
 @app.route('/api/photon/edit', methods=['POST'])
 def api_photon_edit():
@@ -1216,5 +1457,28 @@ Set-Content $hosts_path $new_content -Force
         print(f"[PHOTON DELETE ERROR] {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/photon/cache/clear', methods=['POST'])
+def api_photon_cache_clear():
+    try:
+        if PHOTON_CACHE_FILE.exists():
+            os.remove(PHOTON_CACHE_FILE)
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/photon/db-status', methods=['GET'])
+def api_photon_db_status():
+    global PHOTON_DB, PHOTON_SYNC_IN_PROGRESS
+    # Start sync if not already started
+    if PHOTON_DB is None and not PHOTON_SYNC_IN_PROGRESS:
+        load_photon_db()
+        
+    return jsonify({
+        "loaded": PHOTON_DB is not None and len(PHOTON_DB) > 0,
+        "syncing": PHOTON_SYNC_IN_PROGRESS,
+        "url": PHOTON_DB_URL
+    })
+
 if __name__ == '__main__':
+
     app.run(host='127.0.0.1', port=8000)
