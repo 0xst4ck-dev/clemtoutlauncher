@@ -1,0 +1,27 @@
+# - OpenSteamTool Link : https://github.com/OpenSteam001/OpenSteamTool
+
+[log]
+# Log verbosity for all log files
+# Valid: trace, debug, info, warn, error
+level = "info"
+
+[manifest]
+# Which upstream API to query for depot manifest request codes.
+#   "steamrun"  → https://manifest.steam.run/api/manifest/{gid}
+#   "wudrm"     → http://gmrc.wudrm.com/manifest/{gid}
+# If <Steam>/config/lua/manifest.lua defines fetch_manifest_code(gid) or
+# fetch_manifest_code_ex(app_id, depot_id, gid), those Lua functions take
+# priority over the url setting below.
+url = "wudrm"
+
+# HTTP timeouts for manifest requests (milliseconds).
+timeout_resolve_ms = 5000
+timeout_connect_ms = 5000
+timeout_send_ms    = 10000
+timeout_recv_ms    = 10000
+
+[lua]
+paths = ["config/stplug-in"]
+
+[pattern]
+mirror = ""
