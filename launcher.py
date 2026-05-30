@@ -2,17 +2,43 @@
 # You are allowed to use, modify, and redistribute this software for non-commercial purposes only.
 # Sources:
 # - Unpacker/Steamless: https://github.com/atom0s/Steamless
-# - Steam File Generation (depot_keys.json and tokens.json): https://gitlab.com/steamautocracks/manifesthub
+# - Steamtool : https://github.com/OpenSteam001/OpenSteamTool
 
 import sys
 import os
 import threading
 import time
 import webview
+import io
+if getattr(sys, 'frozen', False):
+    meipass = sys._MEIPASS
+    dlls_to_remove = [
+        'MSVCP140.dll',
+        'VCRUNTIME140.dll',
+        'VCRUNTIME140_1.dll',
+        'ucrtbase.dll',
+        'DWMAPI.dll',
+    ]
+    for dll in dlls_to_remove:
+        dll_path = os.path.join(meipass, dll)
+        try:
+            if os.path.exists(dll_path):
+                os.remove(dll_path)
+                print(f"Delete : {dll}")
+        except Exception as e:
+            print(f"Unable to delete {dll}: {e}")
 
-current_file_path = os.path.abspath(__file__)
-project_root = os.path.dirname(current_file_path)
-sys.path.append(project_root)
+os.environ['_ORIGINAL_PATH'] = os.environ.get('PATH', '')
+os.environ['_PYINSTALLER_FROZEN'] = '1'
+
+sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='utf-8')
+if getattr(sys, 'frozen', False):
+    project_root = sys._MEIPASS
+else:
+    current_file_path = os.path.abspath(__file__)
+    project_root = os.path.dirname(current_file_path)
+
+sys.path.insert(0, project_root)
 
 try:
     from backend.app import app
@@ -21,42 +47,22 @@ except ImportError:
 
 def start_backend():
     from werkzeug.serving import run_simple
-    # Disable reloader to avoid issues with webview
     run_simple('127.0.0.1', 8000, app, use_reloader=False, threaded=True)
 
-def ensure_steam_running():
-    import psutil, subprocess, winreg, os
-    try:
-        # Check if Steam is already running
-        steam_running = any("steam.exe" in p.info['name'].lower() for p in psutil.process_iter(['name']))
-        if not steam_running:
-            # Try to start it from the registry path
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
-                path, _ = winreg.QueryValueEx(key, "SteamPath")
-                steam_exe = os.path.join(path, "steam.exe")
-                if os.path.exists(steam_exe):
-                    subprocess.Popen([steam_exe])
-    except Exception:
-        pass
-
 def main():
-    ensure_steam_running()
-
-    # Start Flask backend in a separate thread
     backend_thread = threading.Thread(target=start_backend, daemon=True)
     backend_thread.start()
 
-    # Give the backend some time to start
-    time.sleep(2)
+    time.sleep(1)
 
-    # Create the webview window
     webview.create_window(
-        'Clemtout Launcher', 
-        'http://127.0.0.1:8000', 
-        width=1230, 
-        height=800, 
+        'Clemtout Launcher',
+        'http://127.0.0.1:8000',
+        width=1230,
+        height=800,
         background_color='#171a21',
         text_select=True
+
     )
     webview.start()
 
