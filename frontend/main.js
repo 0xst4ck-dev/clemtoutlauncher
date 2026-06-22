@@ -101,6 +101,9 @@ const i18n = {
     fr: {
         'nav.home': 'Accueil',
         'nav.library': 'Bibliothèque',
+        "generate.ryuu_key": "Collez votre clé API Ryuu",
+        "generate.ryuu_hint": "Vous devez vous connecter avec Discord sur",
+        "generate.ryuu_hint_end": "pour obtenir votre clé.",
         'nav.generate': 'Générer Steam',
         'title.details': 'Détails du jeu',
         'nav.settings': 'Paramètres',
@@ -224,6 +227,15 @@ const i18n = {
         'generate.lua_error_unknown': 'Erreur inconnue',
         'generate.lua_error_network': 'Impossible de contacter le serveur backend.',
         'photon.cache_cleared_desc': 'Le cache de détection a été vidé. Les jeux seront rescannés lors de la prochaine visite.',
+        'settings.launcher_edition': 'Édition du Launcher',
+        'settings.launcher_mode': 'Mode actuel :',
+        'settings.status_fix': 'Édition Fixe (Installé dans AppData avec Mises à jour Auto)',
+        'settings.status_portable': 'Édition Portable (Pas d\'installation / Pas de Mises à jour)',
+        'settings.status_not_configured': 'Non configuré',
+        'settings.btn_convert_fix': 'Installer & Passer en Édition Fixe',
+        'settings.btn_convert_portable': 'Passer en Mode Portable',
+        'settings.btn_reinstall': 'Réinstaller le Launcher',
+        'modal.reinstall_confirm': 'Voulez-vous vraiment réinstaller les composants du launcher ?',
     },
     en: {
         'nav.home': 'Home',
@@ -252,6 +264,9 @@ const i18n = {
         'generate.appid': 'Steam ID (AppID)',
         'generate.search': 'Search on SteamDB',
         'generate.button': 'Generate',
+        "generate.ryuu_key": "Paste your Ryuu API Key",
+        "generate.ryuu_hint": "You must log in with Discord on",
+        "generate.ryuu_hint_end": "to get your key.",
         'generate.result': 'Result',
         'settings.title': 'Settings',
         'settings.language': 'Language',
@@ -352,6 +367,15 @@ const i18n = {
         'generate.lua_error_unknown': 'Unknown error',
         'generate.lua_error_network': 'Unable to reach the backend server.',
         'photon.cache_cleared_desc': 'The detection cache has been cleared. Games will be rescanned on your next visit.',
+        'settings.launcher_edition': 'Launcher Edition',
+        'settings.launcher_mode': 'Current Mode:',
+        'settings.status_fix': 'Fix Edition (Installed in AppData with Auto-Updates)',
+        'settings.status_portable': 'Portable Edition (No Installation / No Auto-Updates)',
+        'settings.status_not_configured': 'Not configured',
+        'settings.btn_convert_fix': 'Install & Switch to Fix Edition',
+        'settings.btn_convert_portable': 'Switch to Portable Mode',
+        'settings.btn_reinstall': 'Reinstall Launcher',
+        'modal.reinstall_confirm': 'Are you sure you want to reinstall the launcher components?',
     }
 };
 
@@ -467,6 +491,28 @@ function initSettings() {
     }
 }
 
+const btnSettingsReinstall = document.getElementById('btn-settings-reinstall');
+if (btnSettingsReinstall) {
+    btnSettingsReinstall.addEventListener('click', async () => {
+        const confirmed = await window.showCustomModal("⚠️ Réinstallation", "Voulez-vous vraiment réinstaller les composants du launcher ?", true);
+
+        if (confirmed) {
+            try {
+                const res = await fetch('/api/install/reinstall', { method: 'POST' });
+                const data = await res.json();
+
+                if (data.success) {
+                    window.showCustomModal("🎉 Succès", "Réinitialisation effectuée. Le launcher va se relancer...");
+                    document.getElementById('install-overlay').style.display = 'flex';
+                } else {
+                    alert("Erreur lors de la réinstallation : " + data.error);
+                }
+            } catch (err) {
+                console.error("Erreur réseau :", err);
+            }
+        }
+    });
+}
 
 async function loadSettings() {
     try {
@@ -822,6 +868,95 @@ function initModal() {
                 e.target.value = extracted;
             }
         });
+    }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+    const ryuuKeyInput = document.getElementById('ryuu-api-key');
+    const generateBtn = document.getElementById('generate-btn');
+
+    if (ryuuKeyInput) {
+        try {
+            const res = await fetch(`${API_BASE}/api/get_ryuu_key`);
+            const data = await res.json();
+            if (data.api_key) {
+                ryuuKeyInput.value = data.api_key;
+                if (generateBtn) generateBtn.disabled = false;
+            }
+        } catch (err) {
+            console.error("Erreur chargement clé :", err);
+        }
+
+        ryuuKeyInput.addEventListener('input', async () => {
+            const apiKey = ryuuKeyInput.value.trim();
+            if (generateBtn) generateBtn.disabled = (apiKey === "");
+
+            try {
+                await fetch(`${API_BASE}/api/save_ryuu_key`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey })
+                });
+            } catch (err) {
+                console.error("Échec sauvegarde clé :", err);
+            }
+        });
+    }
+
+    if (generateBtn) {
+        generateBtn.addEventListener('click', generateGame);
+    }
+});
+
+async function generateGame() {
+    const rawInput = document.getElementById('gen-appid').value.trim();
+    const ryuuKeyInput = document.getElementById('ryuu-api-key');
+    const appid = extractAppID(rawInput);
+    const apiKey = ryuuKeyInput ? ryuuKeyInput.value.trim() : '';
+
+    if (!appid) {
+        await window.showCustomModal(`⚠️ ${translate('modal.warning_title')}`, translate('modal.appid_required'));
+        return;
+    }
+
+    const btn = document.getElementById('generate-btn');
+    const output = document.getElementById('generate-output');
+
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="spinner-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 6px; margin-bottom: 0;"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg> ${translate('generate.generating')}`;
+    output.className = 'result-box';
+    output.innerHTML = `<svg class="spinner-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg><div>${translate('generate.initializing')}</div>`;
+
+    try {
+        const res = await fetch(`${API_BASE}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                appid: appid,
+                api_key: apiKey
+            })
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            output.className = 'result-box success';
+            output.innerHTML = `<svg class="check-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+<div><b style="font-size: 16px;">${translate('generate.success')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px; margin-top: 5px; display:inline-block;">${data.game.name}<br>${translate('generate.success_desc')}</span></div>`;
+            await loadGames();
+        } else {
+            output.className = 'result-box error';
+            output.innerHTML = `<svg class="err-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+<div><b>${translate('generate.error')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${data.error}</span></div>`;
+        }
+    } catch (err) {
+        console.error(err);
+        output.className = 'result-box error';
+        output.innerHTML = `<svg class="err-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+<div><b>${translate('generate.network_error')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${translate('generate.network_error_desc')}</span></div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:6px;"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline></svg> ${translate('generate.button')}`;
     }
 }
 
@@ -1357,55 +1492,6 @@ async function searchSteamGames(query) {
     }
 }
 
-async function generateGame() {
-    const rawInput = document.getElementById('gen-appid').value.trim();
-
-    const appid = extractAppID(rawInput);
-
-    if (!appid) {
-        await window.showCustomModal(`⚠️ ${translate('modal.warning_title')}`, translate('modal.appid_required'));
-        return;
-    }
-
-    const btn = document.getElementById('generate-btn');
-    const output = document.getElementById('generate-output');
-
-    btn.disabled = true;
-    btn.innerHTML = `<svg class="spinner-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 6px; margin-bottom: 0;"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg> ${translate('generate.generating')}`;
-    output.className = 'result-box';
-    output.innerHTML = `<svg class="spinner-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 2v4"></path></svg><div>${translate('generate.initializing')}</div>`;
-
-    try {
-        const res = await fetch(`${API_BASE}/api/generate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                appid: appid
-            })
-        });
-
-        const data = await res.json();
-
-        if (data.success) {
-            output.className = 'result-box success';
-            output.innerHTML = `<svg class="check-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
-<div><b style="font-size: 16px;">${translate('generate.success')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px; margin-top: 5px; display:inline-block;">${data.game.name}<br>${translate('generate.success_desc')}</span></div>`;
-            await loadGames();
-        } else {
-            output.className = 'result-box error';
-            output.innerHTML = `<svg class="err-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-<div><b>${translate('generate.error')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${data.error}</span></div>`;
-        }
-    } catch (err) {
-        console.error(err);
-        output.className = 'result-box error';
-        output.innerHTML = `<svg class="err-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-<div><b>${translate('generate.network_error')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${translate('generate.network_error_desc')}</span></div>`;
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-right:6px;"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline></svg> ${translate('generate.button')}`;
-    }
-}
 function formatPlaytime(playtime) {
     if (!playtime) return "0h00";
 
@@ -1637,6 +1723,242 @@ async function updateGameAppId(gameId, newAppId) {
 
 function initLegalLink() {
     console.log("Legal link initialized via standard navigation.");
+}
+
+async function verifyUpdaterUpdate() {
+    try {
+        const response = await fetch('/api/updater/check-self');
+        const data = await response.json();
+
+        if (data.update_started) {
+            window.showCustomModal(
+                "🔧 Updater Update",
+                "An update for the updater is installing in the background. Please do not close the launcher, but you can still use it normally."
+            );
+        }
+    } catch (err) {
+        console.error('Error during updater auto-check:', err);
+    }
+}
+async function checkInstallationFlow() {
+    try {
+        const res = await fetch('/api/install/status');
+        const data = await res.json();
+
+        updateSettingsInstallationUI(data.status);
+
+        if (data.status === 'ask') {
+            document.getElementById('install-overlay').style.display = 'flex';
+        } else if (data.status === 'fix' || data.status === 'installed') {
+            verifyUpdaterUpdate();
+        }
+    } catch (err) {
+        console.error("Installation flow check failed:", err);
+    }
+}
+
+function forceShowSetupOverlay() {
+    const overlay = document.getElementById('install-overlay');
+    if (overlay) {
+        overlay.style.display = 'flex';
+        document.getElementById('setup-buttons').style.display = 'flex';
+        document.getElementById('setup-loading').style.display = 'none';
+    }
+}
+
+function updateSettingsInstallationUI(status) {
+    const textEl = document.getElementById('settings-launcher-mode-text');
+    const btnReinstall = document.getElementById('btn-settings-reinstall');
+
+    if (!textEl) return;
+
+    if (status === 'fix') {
+        textEl.textContent = translate('settings.status_fix');
+        textEl.style.color = "var(--border-hover)";
+    } else {
+        textEl.textContent = translate('settings.status_not_configured');
+        textEl.style.color = "var(--text-secondary)";
+    }
+
+    if(btnReinstall) btnReinstall.style.display = (status === 'fix') ? "inline-block" : "none";
+}
+
+function updateSettingsInstallationUI(status) {
+    const textEl = document.getElementById('settings-launcher-mode-text');
+    const btnReinstall = document.getElementById('btn-settings-reinstall');
+
+    if (!textEl) return;
+
+    if (status === 'fix') {
+        textEl.textContent = translate('settings.status_fix');
+        textEl.style.color = "var(--border-hover)";
+    } else if (status === 'portable') {
+        textEl.textContent = translate('settings.status_portable');
+        textEl.style.color = "var(--text-primary)";
+    } else {
+        textEl.textContent = translate('settings.status_not_configured');
+    }
+
+    if(btnReinstall) btnReinstall.style.display = "inline-block";
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+
+    const btnFix = document.getElementById('btn-setup-fix');
+    const btnReinstall = document.getElementById('btn-settings-reinstall');
+
+    if (btnFix) {
+        btnFix.addEventListener('click', async () => {
+            await fetch('/api/install/fix', { method: 'POST' });
+            document.getElementById('install-overlay').style.display = 'none';
+            checkInstallationFlow();
+        });
+    }
+
+    if (btnReinstall) {
+        btnReinstall.addEventListener('click', async () => {
+            const confirmed = await window.showCustomModal(translate('modal.delete_title'), translate('modal.reinstall_confirm'), true);
+            if (!confirmed) return;
+
+            try {
+                const res = await fetch('/api/install/reinstall', { method: 'POST' });
+                const data = await res.json();
+
+                if (data.success) {
+                    const overlay = document.getElementById('install-overlay');
+                    if (overlay) {
+                        overlay.style.setProperty('display', 'flex', 'important');
+                        document.getElementById('setup-buttons').style.setProperty('display', 'flex', 'important');
+                        document.getElementById('setup-loading').style.setProperty('display', 'none', 'important');
+                    }
+                }
+            } catch (err) {
+                console.error("erreur js :", err);
+            }
+        });
+    }
+});
+async function handleFixInstallationFlow(overlayId) {
+    const setupButtons = document.getElementById('setup-buttons');
+    const setupLoading = document.getElementById('setup-loading');
+
+    if (overlayId && setupButtons && setupLoading) {
+        setupButtons.style.display = 'none';
+        setupLoading.style.display = 'block';
+    }
+
+    try {
+        const response = await fetch('/api/install/fix', { method: 'POST' });
+        const result = await response.json();
+
+        if (result.success) {
+            window.showCustomModal("🎉 Success", "The Fix Edition is now fully installed! Shortcuts have been added to your Desktop and Start Menu.");
+            if (overlayId) {
+                setTimeout(() => {
+                    document.getElementById(overlayId).style.display = 'none';
+                }, 3000);
+            }
+            checkInstallationFlow();
+        } else {
+            window.showCustomModal("⚠️ Error", "Installation error: " + result.error);
+            if (overlayId && setupButtons && setupLoading) {
+                setupButtons.style.display = 'flex';
+                setupLoading.style.display = 'none';
+            }
+        }
+    } catch (err) {
+        window.showCustomModal("⚠️ Error", "Request failed: " + err);
+        if (overlayId && setupButtons && setupLoading) {
+            setupButtons.style.display = 'flex';
+            setupLoading.style.display = 'none';
+        }
+    }
+}
+async function checkUpdaterSelfUpdate() {
+    try {
+        const res = await fetch('/api/updater/check-self');
+        const data = await res.json();
+
+        if (data.update_started) {
+            if (typeof window.showCustomModal === 'function') {
+                window.showCustomModal(
+                    "🔧 Updater Update",
+                    "An update for the updater is being installed in the background. Please do not close the launcher; you can continue using it normally."
+                );
+            }
+        }
+    } catch (err) {
+        console.error("Silently checking updater update failed:", err);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(checkInstallationFlow, 1200);
+
+    const btnPortable = document.getElementById('btn-setup-portable');
+    const btnFix = document.getElementById('btn-setup-fix');
+    const setupButtons = document.getElementById('setup-buttons');
+    const setupLoading = document.getElementById('setup-loading');
+
+    if (btnPortable) {
+        btnPortable.addEventListener('click', async () => {
+            await fetch('/api/install/portable', { method: 'POST' });
+            document.getElementById('install-overlay').style.display = 'none';
+            checkUpdaterSelfUpdate();
+        });
+    }
+
+    if (btnFix) {
+        btnFix.addEventListener('click', async () => {
+            setupButtons.style.display = 'none';
+            setupLoading.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/install/fix', { method: 'POST' });
+                const result = await response.json();
+
+                if (result.success) {
+                    if (typeof window.showCustomModal === 'function') {
+                        window.showCustomModal("🎉 Success", "The Fix Edition is now fully installed! Shortcuts have been added to your Desktop and Start Menu.");
+                    } else {
+                        alert("Installation successful!");
+                    }
+                    setTimeout(() => {
+                        document.getElementById('install-overlay').style.display = 'none';
+                    }, 8000 );
+                } else {
+                    alert("Installation error: " + result.error);
+                    setupButtons.style.display = 'flex';
+                    setupLoading.style.display = 'none';
+                }
+            } catch (err) {
+                alert("Request failed: " + err);
+                setupButtons.style.display = 'flex';
+                setupLoading.style.display = 'none';
+            }
+        });
+    }
+});
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(verifyUpdaterUpdate, 1000);
+});
+
+const btnSettingsConvertFix = document.getElementById('btn-settings-convert-fix');
+if (btnSettingsConvertFix) {
+    btnSettingsConvertFix.addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/install/fix', { method: 'POST' });
+            const data = await res.json();
+
+            if (data.success) {
+                window.showCustomModal("🔧 Mode Fix", "Le launcher va redémarrer instantanément en mode Fix...");
+            } else {
+                alert("Erreur : " + data.error);
+            }
+        } catch (err) {
+            console.log("Redémarrage du launcher...");
+        }
+    });
 }
 
 async function togglePhoton(gameId, value) {
