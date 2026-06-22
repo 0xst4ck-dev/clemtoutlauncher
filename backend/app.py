@@ -3,26 +3,12 @@
 # Sources:
 # - Unpacker/Steamless: https://github.com/atom0s/Steamless
 # - Steamtool : https://github.com/OpenSteam001/OpenSteamTool
-import os
-import sys
-import threading
-import io
-import hashlib
-import re
-import json
-import uuid
-import subprocess
-import time
-import zipfile
+import os, sys, threading, io, hashlib, re, json, uuid, time, zipfile, requests, vdf, urllib3, traceback, mimetypes, shutil, subprocess
+
 from pathlib import Path
 from flask import Flask, jsonify, send_file, request, abort, send_from_directory, Response, redirect
 from flask_cors import CORS
-import requests
-import vdf
-import urllib3
-import traceback
-import shutil
-import mimetypes
+
 _logs = []
 
 def log(msg):
@@ -32,7 +18,6 @@ def log(msg):
     print(msg)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 app = Flask(__name__)
 CORS(app)
@@ -50,8 +35,6 @@ def force_utf8_charset(response):
     if response.mimetype == 'application/json':
         response.headers['Content-Type'] = 'application/json; charset=utf-8'
     return response
-
-DEV_MODE = False
 
 
 if getattr(sys, 'frozen', False):
@@ -72,7 +55,7 @@ DEPOT_KEYS_FILE_PATH = BASE_DIR / "depotkeys.json"
 TOKENS_FILE_PATH = BASE_DIR / "appaccesstokens.json"
 PHOTON_CACHE_FILE = USER_DIR / 'photon_cache.json'
 STEAM_API_URL = "https://store.steampowered.com/api/appdetails?appids="
-BACKUP_API_URL = "https://kyzu-proxy.ucupbaba1906.workers.dev/secure_download?appid={appid}&auth_code=RYUUMANIFEST72oz"
+BACKUP_API_URL = "https://depotbox.org"
 
 def get_frontend_dir():
     path_exe = BASE_DIR / 'frontend'
@@ -116,7 +99,20 @@ STEAM_PATH = os.environ.get("STEAM_PATH") or get_steam_install_path()
 LOGINUSERS_PATH = Path(STEAM_PATH) / "config" / "loginusers.vdf"
 AVATAR_DIR = Path(STEAM_PATH) / "config" / "avatarcache"
 
-STEAM_BASE_ID = 76561197960265728  # Constante de conversion Steam32 → Steam64
+STEAM_BASE_ID = 76561197960265728
+
+def find_free_port(default_port=8000):
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(('127.0.0.1', default_port))
+        s.close()
+        return default_port
+    except socket.error:
+        s.bind(('127.0.0.1', 0))
+        free_port = s.getsockname()[1]
+        s.close()
+        return free_port
 
 def convert_steam32_to_64(steam32: str) -> str:
     """Converts a SteamID32 (AccountID) to SteamID64."""
@@ -248,6 +244,32 @@ def get_insensitive(data, *keys):
 
     return current
 
+def load_ryuu_key_from_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('ryuu_api_key', '')
+        except Exception as e:
+            print(f"[!] Error reading SETTINGS_FILE: {e}")
+    return ''
+
+def save_ryuu_key_to_settings(api_key):
+    data = {}
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+
+    data['ryuu_api_key'] = api_key.strip()
+
+    try:
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"[!] Error writing SETTINGS_FILE: {e}")
 
 def load_games():
     try:
@@ -268,7 +290,7 @@ def save_games(data):
             json.dump(data, f, indent=4, ensure_ascii=False)
         return True
     except Exception as e:
-        print(f"Erreur sauvegarde: {e}")
+        print(f"Backup error: {e}")
         return False
 
 def load_settings():
@@ -300,6 +322,33 @@ def load_settings():
 def save_settings(data):
     try:
         with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        return True
+    except:
+        return False
+
+def get_launcher_mode_from_json():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("launcher_mode", "ask")
+        except:
+            pass
+    return "ask"
+
+def save_launcher_mode_to_json(mode_value):
+    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+    data = {}
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except:
+            data = {}
+    data["launcher_mode"] = mode_value
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
         return True
     except:
@@ -346,6 +395,7 @@ def find_avatar_path(steamid):
             return AVATAR_DIR / fname
     return None
 
+
 def download_steam_banner(appid):
     filename = f"{appid}_banner.jpg"
     filepath = BANNERS_DIR / filename
@@ -353,14 +403,23 @@ def download_steam_banner(appid):
     if filepath.exists():
         return filename
 
+    library_hero_url = f"https://steamcdn-a.akamaihd.net/steam/apps/{appid}/library_hero.jpg"
+    try:
+        r = requests.get(library_hero_url, timeout=10)
+        r.raise_for_status()
+        with open(filepath, 'wb') as f:
+            f.write(r.content)
+        print(f"[BANNER] Large Library Hero banner retrieved for AppID {appid}")
+        return filename
+    except Exception:
+        print(f"[BANNER] Library Hero unavailable for AppID {appid}, switch to the Store API...")
+
     urls = []
-    
-    # Try to get the official URL from the Steam API first
+
     details = get_steam_game_details(appid)
     if details and details.get("header_image"):
         urls.append(details["header_image"])
 
-    # Fallbacks
     urls.extend([
         f"https://cdn.akamai.steamstatic.com/steam/apps/{appid}/header.jpg",
         f"https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/header.jpg",
@@ -373,6 +432,7 @@ def download_steam_banner(appid):
             r.raise_for_status()
             with open(filepath, 'wb') as f:
                 f.write(r.content)
+            print(f"[BANNER] Emergency Store banner retrieved for AppID {appid}")
             return filename
         except:
             continue
@@ -491,42 +551,59 @@ def sync_launchertools(steam_base_path: str):
             shutil.copy2(source_file, target_file)
 
 
-def process_appid(appid: str, base_dir: str):
-    steam_path = get_steam_install_path()
-    output_dir = os.path.join(steam_path, "config", "lua")
-    os.makedirs(output_dir, exist_ok=True)
-
-    lua_file_path = os.path.join(output_dir, f"{appid}.lua")
-
-    if os.path.exists(lua_file_path):
-        os.remove(lua_file_path)
-
-    sync_launchertools(steam_path)
-
-    print(f"[*] Querying Kyzu API for {appid}...")
-    url_fallback = BACKUP_API_URL.format(appid=appid)
+def process_appid(appid: str, api_key: str):
+    if not api_key.strip():
+        return None, "Clé API manquante."
 
     try:
-        response = requests.get(url_fallback, timeout=30)
+        steam_path = get_steam_install_path()
+    except NameError:
+        steam_path = r"C:\Program Files (x86)\Steam"
+    config_base = os.path.join(steam_path, "config")
+    target_folders = ["lua", "stplug-in"]
+
+    for folder in target_folders:
+        os.makedirs(os.path.join(config_base, folder), exist_ok=True)
+
+    print(f"[*] Querying Ryuu API for AppID {appid}...")
+
+    url = f"https://generator.ryuu.lol/api/download/{appid}"
+    headers = {
+        "X-Auth-Key": api_key.strip()
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+
         if response.status_code == 200 and response.content:
             with zipfile.ZipFile(io.BytesIO(response.content)) as z:
                 for filename in z.namelist():
                     if filename.endswith('.lua'):
+                        parts = filename.split('/')
+                        folder_target = parts[0] if (len(parts) > 1 and parts[0] in target_folders) else "lua"
+                        file_basename = os.path.basename(filename)
+                        dest_path = os.path.join(config_base, folder_target, file_basename)
+
                         lua_content = z.read(filename).decode('utf-8', errors='ignore')
+                        clean_lines = []
+                        for line in lua_content.splitlines():
+                            if not line.strip().lower().startswith("setmanifest"):
+                                clean_lines.append(line)
 
-                        with open(lua_file_path, "w", encoding="utf-8", newline="\n") as f:
-                            f.write(lua_content)
+                        clean_lua_content = "\n".join(clean_lines)
 
-                        return output_dir, f"Lua file for {appid} retrieved from API."
+                        with open(dest_path, "w", encoding="utf-8", newline="\n") as f:
+                            f.write(clean_lua_content)
 
-            return None, "No .lua file found in the API response."
+            return config_base, f"Lua file for {appid} retrieved from API."
+
+        elif response.status_code == 403:
+            return None, "Erreur 403 : Invalid or expired API key."
         else:
-            return None, (f"The API returned an error: {response.status_code}. "
-                          f"Please find the Lua file elsewhere and drag and drop it into the designated area")
+            return None, f"The API returned an error : {response.status_code}"
 
     except Exception as e:
-        return None, f"Backup API error: {e}"
-
+        return None, f"API connection error : {e}"
 
 @app.route('/api/lua/upload', methods=['POST'])
 def api_lua_upload():
@@ -641,10 +718,8 @@ def static_files(path):
     if frontend_dir:
         file_path = frontend_dir / path
         if file_path.exists():
-            # Détection automatique du type de fichier (png, svg, json...)
             mimetype, _ = mimetypes.guess_type(path)
 
-            # Correction stricte pour Edge Chromium (WebView2)
             if path.endswith('.css'):
                 mimetype = 'text/css'
             elif path.endswith('.js'):
@@ -1033,6 +1108,7 @@ def get_clean_env():
 def api_logs():
     return jsonify(_logs)
 
+
 @app.route('/api/games/<game_id>/launch', methods=['POST'])
 def api_launch_game(game_id):
     data = request.get_json()
@@ -1048,7 +1124,7 @@ def api_launch_game(game_id):
 
     try:
         original_path = Path(game_path).resolve()
-        backup_path = original_path.with_suffix(".pack")
+        backup_path = Path(str(original_path) + ".pack")
         target_exe = str(original_path)
 
         if mode == 'direct':
@@ -1061,7 +1137,7 @@ def api_launch_game(game_id):
         loader_dir = str(Path(loader_path).parent)
 
         if not Path(loader_path).exists():
-            return jsonify({"error": f"Loader introuvable : {loader_path}"}), 400
+            return jsonify({"error": f"Loader not found : {loader_path}"}), 400
 
         target_appid = "480"
         env = os.environ.copy()
@@ -1069,29 +1145,75 @@ def api_launch_game(game_id):
         env["SteamGameId"] = target_appid
         env["SteamEnv"] = "1"
 
-        if UNPACKER_EXE.exists() and not backup_path.exists():
+        if UNPACKER_EXE.exists():
             try:
-                subprocess.run(
-                    [str(UNPACKER_EXE), "--quiet", target_exe],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=0x08000000
-                )
+                unpacked_v1 = original_path.with_suffix('.exe.unpacked.exe')
+                unpacked_v2 = original_path.with_name(original_path.stem + ".unpacked.exe")
 
-                unpacked_found = original_path.with_name(original_path.stem + ".unpacked.exe")
-                if unpacked_found.exists():
+                unpacked_found = unpacked_v1 if unpacked_v1.exists() else (
+                    unpacked_v2 if unpacked_v2.exists() else None)
+
+                if not unpacked_found:
+                    print("[UNPACK] File not found. Launching unpacker...")
+                    subprocess.run(
+                        [str(UNPACKER_EXE), "--quiet", target_exe],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        cwd=str(UNPACKER_EXE.parent),
+                        creationflags=0x08000000,
+                        timeout=5
+                    )
+
+                    if unpacked_v1.exists():
+                        unpacked_found = unpacked_v1
+                    elif unpacked_v2.exists():
+                        unpacked_found = unpacked_v2
+
+                if unpacked_found and unpacked_found.exists():
+                    print(f"[UNPACK] File found ({unpacked_found.name}). Swap immediately...")
+
+                    if backup_path.exists():
+                        try:
+                            os.remove(str(backup_path))
+                        except:
+                            pass
+
                     os.rename(str(original_path), str(backup_path))
-                    os.replace(str(unpacked_found), str(original_path))
-            except Exception as unpack_e:
-                print(f"Unpack error: {unpack_e}")
+                    os.rename(str(unpacked_found), str(original_path))
+                    print("[UNPACK] Swap complete.")
+                else:
+                    print("[UNPACK] No unpacked files were found and the unpacker generated nothing.")
 
-        result = subprocess.run(
+            except Exception as unpack_e:
+                print(f"[UNPACK ERROR] Quick error : {unpack_e}")
+
+
+        target_dir = original_path.parent
+        flask_root = Path(__file__).resolve().parent
+
+        source_proxy = flask_root / "winmm.dll"
+        source_fix = flask_root / "crypthook.dll"
+
+        dest_proxy = target_dir / "winmm.dll"
+        dest_fix = target_dir / "crypthook.dll"
+
+        if source_proxy.exists():
+            try:
+                shutil.copy2(str(source_proxy), str(dest_proxy))
+            except PermissionError:
+                pass
+
+        if source_fix.exists():
+            try:
+                shutil.copy2(str(source_fix), str(dest_fix))
+            except PermissionError:
+                pass
+
+        subprocess.Popen(
             [loader_path, target_exe],
             cwd=loader_dir,
             env=env,
-            capture_output=True,
-            text=True,
-            timeout=10
+            creationflags=0x08000000
         )
 
         game["last_played"] = int(time.time())
@@ -1101,6 +1223,7 @@ def api_launch_game(game_id):
     except Exception as e:
         print(f"[LAUNCH ERROR] {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/games/<game_id>/playtime', methods=['POST'])
 def api_update_playtime(game_id):
@@ -1139,14 +1262,14 @@ def scan_all_drives():
         r"Jeux\Steam"
     ]
 
-    print(f"[DEBUG] Disques détectés : {available_drives}")
+    print(f"[DEBUG] Disks detected : {available_drives}")
 
     for drive in available_drives:
         for folder in common_folders:
             full_path = Path(drive) / folder
             if (full_path / "steamapps").exists():
                 steam_paths.append(full_path)
-                print(f"[INFO] Bibliothèque trouvée (Scan) : {full_path}")
+                print(f"[INFO] Library found (Scan) : {full_path}")
 
     return steam_paths
 
@@ -1167,7 +1290,7 @@ def api_update_steam_playtime():
                 else:
                     game["playtime"] = 0
             except Exception as e:
-                print(f"[WARN] Impossible de récupérer playtime pour {appid}: {e}")
+                print(f"[WARN] Unable to recover playtime for {appid}: {e}")
 
     save_games(data)
     return jsonify({"success": True, "updated": len([g for g in data.get("games", []) if g.get("steam_appid")])})
@@ -1256,6 +1379,22 @@ def api_import_steam_fixed():
     return jsonify({"success": True, "imported": imported_count})
 
 
+@app.route('/api/get_ryuu_key', methods=['GET'])
+def get_ryuu_key():
+    key = load_ryuu_key_from_settings()
+    return jsonify({"api_key": key})
+
+@app.route('/api/save_ryuu_key', methods=['POST'])
+def api_save_ryuu_key():
+    req_data = request.get_json()
+    if not req_data:
+        return jsonify({"error": "No data received"}), 400
+
+    api_key = req_data.get('api_key', '')
+    save_ryuu_key_to_settings(api_key)
+
+    return jsonify({"success": True, "message": "Clé API Ryuu synchronisée"})
+
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
     req_data = request.get_json()
@@ -1263,12 +1402,17 @@ def api_generate():
         return jsonify({"error": "No data received"}), 400
 
     appid = req_data.get('appid')
+    api_key = req_data.get('api_key')
 
     if not appid:
         return jsonify({"error": "AppID required"}), 400
+    if not api_key:
+        return jsonify({"error": "Ryuu API Key required"}), 400
+
+    save_ryuu_key_to_settings(api_key)
 
     try:
-        output_dir, game_name = process_appid(appid, USER_DIR)
+        output_dir, game_name = process_appid(appid, api_key)
         if not output_dir:
             return jsonify({"error": game_name}), 500
 
@@ -1278,7 +1422,6 @@ def api_generate():
             "output_dir": output_dir,
             "message": f"Files generated for {game_name}"
         })
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1313,7 +1456,7 @@ def api_lua_upload_custom():
 
         return jsonify({
             "success": True,
-            "message": f"Fichier .lua installé pour {appid} dans {output_dir}"
+            "message": f".lua file installed for {appid} in {output_dir}"
         })
 
     except Exception as e:
@@ -1326,14 +1469,23 @@ def find_game_executable(install_dir, game_name):
     if not install_dir.exists():
         return ""
 
-    root_exes = list(install_dir.glob("*.exe"))
-
     blacklist = [
         "unitycrashhandler", "crashreport", "setup", "install",
         "uninstall", "vcredist", "python", "steamcmd", "clemtoutlauncher",
         "game_loader", "helper", "overlay", "config", "touch"
     ]
 
+    all_exes = list(install_dir.rglob("*.exe"))
+    deep_candidates = [e for e in all_exes if not any(bad in e.name.lower() for bad in blacklist)]
+
+    if deep_candidates:
+        shipping = [d for d in deep_candidates if "shipping" in d.name.lower()]
+        if shipping:
+            def clean_return(path_obj):
+                return str(os.path.abspath(path_obj)).replace('\\', '/')
+            return clean_return(max(shipping, key=lambda x: x.stat().st_size))
+
+    root_exes = list(install_dir.glob("*.exe"))
     candidates = [exe for exe in root_exes if not any(bad in exe.name.lower() for bad in blacklist)]
 
     def clean_return(path_obj):
@@ -1349,13 +1501,7 @@ def find_game_executable(install_dir, game_name):
         chosen = max(candidates, key=lambda x: x.stat().st_size)
         return clean_return(chosen)
 
-    all_exes = list(install_dir.rglob("*.exe"))
-    deep_candidates = [e for e in all_exes if not any(bad in e.name.lower() for bad in blacklist)]
-
     if deep_candidates:
-        shipping = [d for d in deep_candidates if "shipping" in d.name.lower()]
-        if shipping:
-            return clean_return(max(shipping, key=lambda x: x.stat().st_size))
         return clean_return(max(deep_candidates, key=lambda x: x.stat().st_size))
 
     return ""
@@ -1363,10 +1509,6 @@ def find_game_executable(install_dir, game_name):
 @app.route('/api/banners/<filename>')
 def api_banner(filename):
     return send_from_directory(BANNERS_DIR, filename)
-
-@app.route('/api/status')
-def api_status():
-    return jsonify({"dev_mode": DEV_MODE})
 
 @app.route('/api/games/<game_id>/photon-toggle', methods=['PUT'])
 def api_photon_toggle(game_id):
@@ -1479,6 +1621,195 @@ def api_photon_db_status():
         "url": PHOTON_DB_URL
     })
 
-if __name__ == '__main__':
 
-    app.run(host='127.0.0.1', port=8000)
+TARGET_DIR = r"%LOCALAPPDATA%\ClemtoutLauncher"
+_is_installing = False
+_install_lock = threading.Lock()
+
+
+@app.route('/api/install/status', methods=['GET'])
+def api_install_status():
+    current_dir = os.path.abspath(os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__))
+    target_dir_expanded = os.path.abspath(os.path.expandvars(TARGET_DIR))
+
+    if current_dir.lower() == target_dir_expanded.lower():
+        return jsonify({"status": "fix"})
+
+    mode = get_launcher_mode_from_json()
+    if mode not in ["fix", "portable", "ask"]:
+        mode = "ask"
+
+    return jsonify({"status": mode})
+
+
+@app.route('/api/install/portable', methods=['POST'])
+def api_install_portable():
+    success = save_launcher_mode_to_json("portable")
+    return jsonify({"success": success})
+
+@app.route('/api/install/fix', methods=['POST'])
+def api_install_fix():
+    global _is_installing
+    if not getattr(sys, 'frozen', False):
+        return jsonify({"success": False, "error": "Must be compiled (.exe) to run Fix installation."})
+
+    with _install_lock:
+        if _is_installing:
+            return jsonify({"success": True, "already_running": True})
+        _is_installing = True
+
+    try:
+        target_dir_expanded = os.path.abspath(os.path.expandvars(TARGET_DIR))
+        os.makedirs(target_dir_expanded, exist_ok=True)
+
+        current_exe = os.path.abspath(sys.executable)
+        target_launcher = os.path.join(target_dir_expanded, "clemtoutlauncher.exe")
+
+        if current_exe.lower() != target_launcher.lower():
+            shutil.copy2(current_exe, target_launcher)
+
+        updater_api_url = "https://api.github.com/repos/0xst4ck-dev/updater/releases/latest"
+        res = requests.get(updater_api_url, timeout=15).json()
+
+        if 'assets' not in res or len(res['assets']) == 0:
+            _is_installing = False
+            return jsonify({"success": False, "error": "No update assets found on GitHub."})
+
+        download_url = res['assets'][0]['browser_download_url']
+        target_updater = os.path.join(target_dir_expanded, "update.exe")
+
+        r = requests.get(download_url, timeout=30)
+        if r.status_code == 200:
+            with open(target_updater, "wb") as f:
+                f.write(r.content)
+        else:
+            _is_installing = False
+            return jsonify({"success": False, "error": f"Failed to download updater. HTTP {r.status_code}"})
+
+        desktop_lnk = os.path.join(os.path.expanduser("~"), "Desktop", "clemtoutlauncher.lnk")
+        start_menu_programs = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs")
+        os.makedirs(start_menu_programs, exist_ok=True)
+        start_lnk = os.path.join(start_menu_programs, "clemtoutlauncher.lnk")
+
+        def create_shortcut(target, lnk_path):
+            ps_cmd = (
+                f'$WshShell = New-Object -ComObject WScript.Shell; '
+                f'$Shortcut = $WshShell.CreateShortcut("{lnk_path}"); '
+                f'$Shortcut.TargetPath = "{target}"; '
+                f'$Shortcut.IconLocation = "{target},0"; '
+                f'$Shortcut.WorkingDirectory = "{os.path.dirname(target)}"; '
+                f'$Shortcut.Save()'
+            )
+            subprocess.run(["powershell", "-Command", ps_cmd], creationflags=0x08000000, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+
+        create_shortcut(target_updater, desktop_lnk)
+        create_shortcut(target_updater, start_lnk)
+
+        save_launcher_mode_to_json("fix")
+
+        def run_delayed_restart_and_cleanup():
+            time.sleep(0.4)
+
+            subprocess.Popen([target_launcher], cwd=target_dir_expanded)
+
+            cleanup_cmd = f':loop\ntimeout /t 1 /nobreak >nul\ndel /f /q "{current_exe}"\nif exist "{current_exe}" goto loop'
+            subprocess.Popen(["cmd.exe", "/c", cleanup_cmd], creationflags=0x08000000)
+
+            os._exit(0)
+
+        threading.Thread(target=run_delayed_restart_and_cleanup, daemon=True).start()
+
+        _is_installing = False
+        return jsonify({"success": True, "message": "Installation réussie, transfert vers le mode Fix..."})
+
+    except Exception as e:
+        _is_installing = False
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/install/reinstall', methods=['POST'])
+def api_install_reinstall():
+    try:
+        if not os.path.exists(SETTINGS_FILE):
+            return jsonify({"success": False, "error": "Fichier settings introuvable"})
+
+        with open(SETTINGS_FILE, "r+") as f:
+            data = json.load(f)
+            data["is_configured"] = False
+            f.seek(0)
+            json.dump(data, f, indent=4)
+            f.truncate()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/updater/check-self', methods=['GET'])
+def api_updater_check_self():
+    if not getattr(sys, 'frozen', False):
+        return jsonify({"update_started": False})
+
+    try:
+        mode = get_launcher_mode_from_json()
+        if mode == "portable":
+            return jsonify({"update_started": False})
+
+        current_dir = os.path.dirname(sys.executable)
+        updater_path = os.path.join(current_dir, "update.exe")
+
+        if not os.path.exists(updater_path):
+            return jsonify({"update_started": False})
+
+        api_url = "https://api.github.com/repos/0xst4ck-dev/updater/releases/latest"
+        response = requests.get(api_url, timeout=10).json()
+
+        asset = response['assets'][0]
+        download_url = asset['browser_download_url']
+        github_hash = asset.get('digest')
+
+        local_hash = ""
+        if os.path.exists(updater_path):
+            sha256_hash = hashlib.sha256()
+            with open(updater_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            local_hash = "sha256:" + sha256_hash.hexdigest()
+
+        if local_hash != github_hash:
+            def bg_download():
+                try:
+                    temp_path = updater_path + ".tmp"
+                    r = requests.get(download_url, timeout=30)
+                    if r.status_code == 200:
+                        with open(temp_path, "wb") as f:
+                            f.write(r.content)
+                        if os.path.exists(updater_path):
+                            os.remove(updater_path)
+                        os.rename(temp_path, updater_path)
+                except:
+                    pass
+
+            threading.Thread(target=bg_download, daemon=True).start()
+            return jsonify({"update_started": True})
+
+    except:
+        pass
+
+    return jsonify({"update_started": False})
+
+
+if __name__ == '__main__':
+    if "--cleanup" in sys.argv:
+        try:
+            idx = sys.argv.index("--cleanup")
+            old_exe_path = sys.argv[idx + 1]
+
+            time.sleep(0.4)
+            if os.path.exists(old_exe_path):
+                os.remove(old_exe_path)
+        except Exception as e:
+            print(f"Error during cleaning : {e}")
+
+    port_to_use = find_free_port(8000)
+    app.run(host='127.0.0.1', port=port_to_use)
