@@ -221,11 +221,11 @@ const i18n = {
         'library.no_banner': 'Pas de bannière',
         'modal.success': 'Succès',
         'modal.error': 'Erreur',
-        'generate.lua_success_prefix': 'Le fichier',
-        'generate.lua_success_suffix': 'est désormais disponible sur Steam.',
-        'generate.lua_error_process': 'Erreur lors du traitement : ',
-        'generate.lua_error_unknown': 'Erreur inconnue',
-        'generate.lua_error_network': 'Impossible de contacter le serveur backend.',
+        'api.success': 'Fichier Lua pour {appid} récupéré avec succès depuis l\'API.',
+        'api.error_404': 'Erreur 404 : L\'API ne possède pas les fichiers pour ce jeu. Veuillez importer le jeu dans la zone prévue.',
+        'api.error_403': 'Erreur 403 : Accès refusé (Cloudflare). Importation manuelle requise.',
+        'api.error_generic': 'Erreur serveur ({code}). Importation manuelle requise.',
+        'api.error_conn': 'Erreur de connexion à l\'API : {error}',
         'photon.cache_cleared_desc': 'Le cache de détection a été vidé. Les jeux seront rescannés lors de la prochaine visite.',
         'settings.launcher_edition': 'Édition du Launcher',
         'settings.launcher_mode': 'Mode actuel :',
@@ -361,11 +361,11 @@ const i18n = {
         'library.no_banner': 'No banner',
         'modal.success': 'Success',
         'modal.error': 'Error',
-        'generate.lua_success_prefix': 'The file',
-        'generate.lua_success_suffix': 'is now available on Steam.',
-        'generate.lua_error_process': 'Error during processing: ',
-        'generate.lua_error_unknown': 'Unknown error',
-        'generate.lua_error_network': 'Unable to reach the backend server.',
+        'api.success': 'Lua file for {appid} retrieved successfully from the API.',
+        'api.error_404': 'Error 404: The API does not have the files for the desired game; please import the game into the import area.',
+        'api.error_403': 'Error 403: Access denied (Cloudflare). Manual import required.',
+        'api.error_generic': 'Server error ({code}). Manual import required.',
+        'api.error_conn': 'API connection error: {error}',
         'photon.cache_cleared_desc': 'The detection cache has been cleared. Games will be rescanned on your next visit.',
         'settings.launcher_edition': 'Launcher Edition',
         'settings.launcher_mode': 'Current Mode:',
@@ -872,37 +872,7 @@ function initModal() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    const ryuuKeyInput = document.getElementById('ryuu-api-key');
     const generateBtn = document.getElementById('generate-btn');
-
-    if (ryuuKeyInput) {
-        try {
-            const res = await fetch(`${API_BASE}/api/get_ryuu_key`);
-            const data = await res.json();
-            if (data.api_key) {
-                ryuuKeyInput.value = data.api_key;
-                if (generateBtn) generateBtn.disabled = false;
-            }
-        } catch (err) {
-            console.error("Erreur chargement clé :", err);
-        }
-
-        ryuuKeyInput.addEventListener('input', async () => {
-            const apiKey = ryuuKeyInput.value.trim();
-            if (generateBtn) generateBtn.disabled = (apiKey === "");
-
-            try {
-                await fetch(`${API_BASE}/api/save_ryuu_key`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ api_key: apiKey })
-                });
-            } catch (err) {
-                console.error("Échec sauvegarde clé :", err);
-            }
-        });
-    }
-
     if (generateBtn) {
         generateBtn.addEventListener('click', generateGame);
     }
@@ -910,9 +880,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function generateGame() {
     const rawInput = document.getElementById('gen-appid').value.trim();
-    const ryuuKeyInput = document.getElementById('ryuu-api-key');
     const appid = extractAppID(rawInput);
-    const apiKey = ryuuKeyInput ? ryuuKeyInput.value.trim() : '';
 
     if (!appid) {
         await window.showCustomModal(`⚠️ ${translate('modal.warning_title')}`, translate('modal.appid_required'));
@@ -931,13 +899,10 @@ async function generateGame() {
         const res = await fetch(`${API_BASE}/api/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                appid: appid,
-                api_key: apiKey
-            })
+            body: JSON.stringify({ appid: appid }) 
         });
-
-        const data = await res.json();
+        
+        const data = await res.json();        
 
         if (data.success) {
             output.className = 'result-box success';
@@ -945,9 +910,16 @@ async function generateGame() {
 <div><b style="font-size: 16px;">${translate('generate.success')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px; margin-top: 5px; display:inline-block;">${data.game.name}<br>${translate('generate.success_desc')}</span></div>`;
             await loadGames();
         } else {
+            // Logique de traduction inline sans nouvelle fonction
+            let errorMsg = data.error;
+            if (errorMsg.includes("Error 404")) errorMsg = translate('api.error_404');
+            else if (errorMsg.includes("Error 403") || errorMsg.includes("Blocked by Cloudflare")) errorMsg = translate('api.error_403');
+            else if (errorMsg.includes("server returned an error")) errorMsg = translate('api.error_generic').replace('{code}', errorMsg.match(/\d+/) || '500');
+            else if (errorMsg.includes("API connection error")) errorMsg = translate('api.error_conn').replace('{error}', '');
+
             output.className = 'result-box error';
             output.innerHTML = `<svg class="err-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-<div><b>${translate('generate.error')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${data.error}</span></div>`;
+<div><b>${translate('generate.error')}</b><br><span style="color:var(--text-secondary); font-size: 13.5px;">${errorMsg}</span></div>`;
         }
     } catch (err) {
         console.error(err);
