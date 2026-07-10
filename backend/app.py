@@ -3,7 +3,7 @@
 # Sources:
 # - Unpacker/Steamless: https://github.com/atom0s/Steamless
 # - Steamtool : https://github.com/OpenSteam001/OpenSteamTool
-import os, sys, threading, io, hashlib, re, json, uuid, time, zipfile, requests, vdf, urllib3, traceback, mimetypes, shutil, subprocess
+import os, sys, threading, io, hashlib, re, json, uuid, time, zipfile, requests, vdf, urllib3, traceback, mimetypes, shutil, subprocess, random
 
 from pathlib import Path
 from flask import Flask, jsonify, send_file, request, abort, send_from_directory, Response, redirect
@@ -56,6 +56,11 @@ TOKENS_FILE_PATH = BASE_DIR / "appaccesstokens.json"
 PHOTON_CACHE_FILE = USER_DIR / 'photon_cache.json'
 STEAM_API_URL = "https://store.steampowered.com/api/appdetails?appids="
 BACKUP_API_URL = "https://depotbox.org"
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+]
 
 def get_frontend_dir():
     path_exe = BASE_DIR / 'frontend'
@@ -244,17 +249,17 @@ def get_insensitive(data, *keys):
 
     return current
 
-def load_ryuu_key_from_settings():
+def load_cf_clearance_from_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return data.get('ryuu_api_key', '')
+                return data.get('cf_clearance', '')
         except Exception as e:
             print(f"[!] Error reading SETTINGS_FILE: {e}")
     return ''
 
-def save_ryuu_key_to_settings(api_key):
+def save_cf_clearance_to_settings(cookie):
     data = {}
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -263,7 +268,7 @@ def save_ryuu_key_to_settings(api_key):
         except Exception:
             data = {}
 
-    data['ryuu_api_key'] = api_key.strip()
+    data['cf_clearance'] = cookie.strip()
 
     try:
         with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
@@ -471,11 +476,10 @@ def get_file_hash(file_path: str) -> str:
         return ""
 
 
-def needs_launchertools_update(steam_base_path: str) -> bool:
-    """ Checks if the launchertools files in Steam are missing or corrupted based on SHA-256 hashes. """
+def check_launchertools_needs_update(steam_base_path: str) -> bool:
     source_dir = BASE_DIR / "launchertools"
     if not source_dir.exists():
-        return False  # Nothing to sync
+        return False
 
     for root, dirs, files in os.walk(source_dir):
         for file in files:
@@ -483,47 +487,43 @@ def needs_launchertools_update(steam_base_path: str) -> bool:
             rel_path = os.path.relpath(source_file, source_dir)
             target_file = os.path.join(steam_base_path, rel_path)
 
-            # If file is missing, update is required
             if not os.path.exists(target_file):
                 return True
-
-            # If hash is different, update is required
             if get_file_hash(source_file) != get_file_hash(target_file):
                 return True
-
+                
     return False
 
+def is_steam_running() -> bool:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq steam.exe", "/NH"],
+            capture_output=True, text=True
+        )
+        return "steam.exe" in result.stdout.lower()
+    except Exception:
+        return False
 
-def ensure_steam_patched(steam_base_path: str):
-    """ Kills Steam if an update is needed, patches files, and restarts it. """
-    if needs_launchertools_update(steam_base_path):
-        print("[*] Steam patch required. Checking if Steam is running...")
+def smart_sync_launchertools(steam_path: str):
+    if not check_launchertools_needs_update(steam_path):
+        print("[+] Les fichiers launchertools sont déjà à jour. Steam n'est pas impacté.")
+        return
 
-        # Check if Steam is running
-        try:
-            output = subprocess.check_output('tasklist /FI "IMAGENAME eq steam.exe" /NH', shell=True, text=True)
-            steam_running = "steam.exe" in output.lower()
-        except Exception:
-            steam_running = False
+    steam_was_running = is_steam_running()
 
-        # Kill Steam if it's running
-        if steam_running:
-            print("[!] Closing Steam to apply patch...")
-            subprocess.run(["taskkill", "/F", "/IM", "steam.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(2)  # Give it some time to close completely
-
-        # Apply the patch
-        sync_launchertools(steam_base_path)
-
-        # Restart Steam if we killed it
-        if steam_running:
-            print("[+] Restarting Steam...")
-            steam_exe = os.path.join(steam_base_path, "steam.exe")
-            if os.path.exists(steam_exe):
-                subprocess.Popen([steam_exe])
+    if steam_was_running:
+        print("[*] Mise à jour des dll requise. Fermeture de Steam pour libérer les fichiers...")
+        subprocess.run(["taskkill", "/F", "/IM", "steam.exe"], capture_output=True)
+        time.sleep(2)
     else:
-        print("[+] Steam is already correctly patched.")
+        print("[*] Mise à jour des dll requise. Steam est déjà fermé.")
 
+    sync_launchertools(steam_path)
+
+    if steam_was_running:
+        steam_exe = os.path.join(steam_path, "steam.exe")
+        subprocess.Popen([steam_exe])
+        print("[*] Steam a été redémarré avec succès.")
 
 def sync_launchertools(steam_base_path: str):
     source_dir = BASE_DIR / "launchertools"
@@ -550,57 +550,113 @@ def sync_launchertools(steam_base_path: str):
 
             shutil.copy2(source_file, target_file)
 
-
-def process_appid(appid: str, api_key: str):
-    if not api_key.strip():
-        return None, "Clé API manquante."
-
+def process_appid(appid: str):
     try:
         steam_path = get_steam_install_path()
     except NameError:
         steam_path = r"C:\Program Files (x86)\Steam"
+
     config_base = os.path.join(steam_path, "config")
     target_folders = ["lua", "stplug-in"]
 
     for folder in target_folders:
         os.makedirs(os.path.join(config_base, folder), exist_ok=True)
 
-    print(f"[*] Querying Ryuu API for AppID {appid}...")
+    print(f"[*] Querying API for AppID {appid}...")
 
-    url = f"https://generator.ryuu.lol/api/download/{appid}"
-    headers = {
-        "X-Auth-Key": api_key.strip()
+    partie1 = random.randint(100000000, 999999999)
+    partie2 = random.randint(1000000000, 1999999999)
+    faux_cookie_ga = f"GA1.1.{partie1}.{partie2}"
+
+    cookies = {
+        "_ga": faux_cookie_ga
     }
 
+
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "accept-language": "fr,fr-FR;q=0.9,en;q=0.8",
+        "referer": "https://walftech.com/generator.html",
+        "upgrade-insecure-requests": "1",
+        "sec-ch-ua-platform": '"Windows"',
+    }
+
+    url = f"https://walftech.com/proxy.php?id={appid}"
+
     try:
-        response = requests.get(url, headers=headers, timeout=30)
+        response = requests.get(
+            url,
+            headers=headers,
+            cookies=cookies,
+            timeout=30,
+        )
 
         if response.status_code == 200 and response.content:
+            if b"cf-challenge" in response.content or b"<html" in response.content[:100].lower():
+                return (
+                    None,
+                    "Blocked by Cloudflare. The site requires manual verification.",
+                )
+
             with zipfile.ZipFile(io.BytesIO(response.content)) as z:
                 for filename in z.namelist():
-                    if filename.endswith('.lua'):
-                        parts = filename.split('/')
-                        folder_target = parts[0] if (len(parts) > 1 and parts[0] in target_folders) else "lua"
+                    if filename.endswith(".lua"):
+                        parts = filename.split("/")
+                        folder_target = (
+                            parts[0]
+                            if (
+                                len(parts) > 1 and parts[0] in target_folders
+                            )
+                            else "lua"
+                        )
                         file_basename = os.path.basename(filename)
-                        dest_path = os.path.join(config_base, folder_target, file_basename)
+                        dest_path = os.path.join(
+                            config_base, folder_target, file_basename
+                        )
 
-                        lua_content = z.read(filename).decode('utf-8', errors='ignore')
+                        lua_content = (
+                            z.read(filename)
+                            .decode("utf-8", errors="ignore")
+                        )
                         clean_lines = []
                         for line in lua_content.splitlines():
-                            if not line.strip().lower().startswith("setmanifest"):
+                            if not line.strip().lower().startswith(
+                                "setmanifest"
+                            ):
                                 clean_lines.append(line)
 
                         clean_lua_content = "\n".join(clean_lines)
 
-                        with open(dest_path, "w", encoding="utf-8", newline="\n") as f:
+                        with open(
+                            dest_path, "w", encoding="utf-8", newline="\n"
+                        ) as f:
                             f.write(clean_lua_content)
 
-            return config_base, f"Lua file for {appid} retrieved from API."
+            if "smart_sync_launchertools" in globals():
+                print("[*] Vérification et synchronisation des fichiers...")
+                smart_sync_launchertools(steam_path)
+
+            return (
+                config_base,
+                f"Lua file for {appid} retrieved from API.",
+            )
+        elif response.status_code == 500:
+            return (
+                None,
+                "Error 404: The API does not have the files for the desired game;  please import the games into the import area."
+            )
 
         elif response.status_code == 403:
-            return None, "Erreur 403 : Invalid or expired API key."
+            return (
+                None,
+                "Error 403: Access denied (Cloudflare cookie expired or invalid). You must manually import the Lua files into the designated area.",
+            )
         else:
-            return None, f"The API returned an error : {response.status_code}"
+            return (
+                None,
+                f"Le serveur a renvoyé une erreur : {response.status_code}. Voplease import the games into the import area.",
+            )
 
     except Exception as e:
         return None, f"API connection error : {e}"
@@ -634,8 +690,8 @@ def api_lua_upload():
         with open(lua_file_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(cleaned_content)
 
-        if 'sync_launchertools' in globals():
-            sync_launchertools(steam_path)
+        if 'smart_sync_launchertools' in globals():
+            smart_sync_launchertools(steam_path)
 
         return jsonify({
             "success": True,
@@ -1379,21 +1435,21 @@ def api_import_steam_fixed():
     return jsonify({"success": True, "imported": imported_count})
 
 
-@app.route('/api/get_ryuu_key', methods=['GET'])
-def get_ryuu_key():
-    key = load_ryuu_key_from_settings()
-    return jsonify({"api_key": key})
+@app.route('/api/get_cf_cookie', methods=['GET'])
+def get_cf_cookie():
+    cookie = load_cf_clearance_from_settings()
+    return jsonify({"cf_clearance": cookie})
 
-@app.route('/api/save_ryuu_key', methods=['POST'])
-def api_save_ryuu_key():
+@app.route('/api/save_cf_cookie', methods=['POST'])
+def api_save_cf_cookie():
     req_data = request.get_json()
     if not req_data:
         return jsonify({"error": "No data received"}), 400
 
-    api_key = req_data.get('api_key', '')
-    save_ryuu_key_to_settings(api_key)
+    cookie = req_data.get('cf_clearance', '')
+    save_cf_clearance_to_settings(cookie)
 
-    return jsonify({"success": True, "message": "Clé API Ryuu synchronisée"})
+    return jsonify({"success": True, "message": "Cookie Cloudflare synchronisé"})
 
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
@@ -1402,17 +1458,12 @@ def api_generate():
         return jsonify({"error": "No data received"}), 400
 
     appid = req_data.get('appid')
-    api_key = req_data.get('api_key')
 
     if not appid:
         return jsonify({"error": "AppID required"}), 400
-    if not api_key:
-        return jsonify({"error": "Ryuu API Key required"}), 400
-
-    save_ryuu_key_to_settings(api_key)
 
     try:
-        output_dir, game_name = process_appid(appid, api_key)
+        output_dir, game_name = process_appid(appid)
         if not output_dir:
             return jsonify({"error": game_name}), 500
 
@@ -1452,7 +1503,7 @@ def api_lua_upload_custom():
             os.remove(lua_file_path)
         with open(lua_file_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(cleaned_content)
-        sync_launchertools(steam_path)
+        smart_sync_launchertools(steam_path)
 
         return jsonify({
             "success": True,
