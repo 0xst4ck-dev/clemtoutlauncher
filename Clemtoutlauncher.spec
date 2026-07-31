@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('frontend', 'frontend'), ('backend/winmm.dll', 'backend'), ('backend/crypthook.dll', 'backend'), ('backend/app.py', 'backend'), ('backend/game_loader.exe', '.'), ('backend/steam_api64.dll', '.'), ('backend/steamcmd', 'steamcmd'), ('backend/Unpacker', 'Unpacker'), ('backend/launchertools', 'launchertools')]
+datas = [('frontend', 'frontend'), ('backend/winmm.dll', 'backend'), ('backend/crypthook.dll', 'backend'), ('backend/app.py', 'backend'), ('backend/game_loader.exe', '.'), ('backend/steam_api64.dll', '.'), ('backend/Unpacker', 'Unpacker'), ('backend/launchertools', 'launchertools')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('flask')
