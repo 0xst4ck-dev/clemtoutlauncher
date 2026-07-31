@@ -1,9 +1,7 @@
 flask
 flask-cors
 requests
-vdf==3.4
 urllib3
-psutil
 pywebview
 pythonnet
 pywin32
